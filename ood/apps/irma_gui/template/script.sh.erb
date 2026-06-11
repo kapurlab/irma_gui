@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# IRMA GUI OOD batch_connect script.
+# $port (uvicorn) is exported by before.sh.
+
+echo "=== IRMA GUI Session Starting ==="
+echo "uvicorn:${port}"
+
+# Shared conda env installed at the tool root.
+# Falls back to a personal install if the shared env is absent.
+SHARED_ENV=/srv/kapurlab/tools/irma_gui/env
+PERSONAL_ENV=/home/${USER}/miniforge3/envs/irma_gui
+PERSONAL_BASE_PYTHON=/home/${USER}/miniforge3/bin/python
+
+if [ -d "${SHARED_ENV}" ] && [ -x "${SHARED_ENV}/bin/python" ]; then
+  IRMA_ENV="${SHARED_ENV}"
+  PYTHON="${SHARED_ENV}/bin/python"
+elif [ -d "${PERSONAL_ENV}" ]; then
+  IRMA_ENV="${PERSONAL_ENV}"
+  PYTHON="${PERSONAL_ENV}/bin/python"
+else
+  IRMA_ENV=""
+  PYTHON="${PERSONAL_BASE_PYTHON}"
+fi
+
+# Tool source (shared install only — no per-user fallback for the app itself)
+IRMA_GUI=/srv/kapurlab/tools/irma_gui
+
+# The env bin must be on PATH so IRMA, blastn/makeblastdb (GenoFLU shells out to
+# them), seqkit and samtools all resolve to the env, not system copies.
+export PATH="${IRMA_ENV}/bin:${PATH}"
+# PYTHONPATH lets the bin/ pipeline modules import each other (local imports).
+export PYTHONPATH="${IRMA_GUI}/bin:${PYTHONPATH}"
+
+cd "${IRMA_GUI}/backend"
+echo "Starting uvicorn on port ${port}"
+echo "  conda env: ${IRMA_ENV}"
+echo "  irma_gui:  ${IRMA_GUI}"
+exec $PYTHON -m uvicorn app.main:app \
+    --host 0.0.0.0 \
+    --port "${port}" \
+    --log-level info

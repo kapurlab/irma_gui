@@ -1,0 +1,13 @@
+<%- if host && port -%>
+<div class="d-flex flex-column gap-3 py-2">
+  <div class="d-flex gap-3 justify-content-center">
+    <a href="/rnode/<%= host %>/<%= port %>/" target="_blank" class="btn btn-success btn-lg px-4">
+      🧬 Open IRMA
+    </a>
+  </div>
+  <p class="text-center text-muted small mb-0">
+    Pick a project, enter sample metadata, then Run IRMA to assemble, build the
+    submission FASTA, genotype with GenoFLU, and produce the PDF + Excel report.
+  </p>
+</div>
+<%- end -%>

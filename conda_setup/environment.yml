@@ -1,0 +1,52 @@
+# Environment for the IRMA GUI.
+# Install (shared) with:
+#   conda env create -p /srv/kapurlab/tools/irma_gui/env -f conda_setup/environment.yml
+# or (personal) with:
+#   conda env create -f conda_setup/environment.yml   # -> env name irma_gui
+#
+# After the env exists, run deploy/install.sh to verify IRMA + GenoFLU and build
+# the frontend. IRMA ships its FLU/CoV reference modules inside the conda
+# package, and GenoFLU ships its reference set under <env>/dependencies/ — so
+# there is no separate database download for the core pipeline.
+name: irma_gui
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  # Core Python
+  - python=3.10
+  - pip
+  - numpy
+  - pandas
+  - openpyxl
+  - biopython            # HA translation / cleavage motif
+  - matplotlib-base      # report figures
+  - reportlab            # PDF report (pure-Python; no headless browser)
+  - pillow               # image sizing in the PDF
+
+  # Viral assembly + genotyping toolchain
+  - irma>=1.0            # CDC IRMA — segmented RNA-virus assembly (FLU / CoV)
+  - genoflu>=1.03        # USDA-VS GenoFLU — H5 2.3.4.4b genotyping (bundled refs)
+  - blast                # blastn / makeblastdb (GenoFLU shells out to these)
+  - seqkit               # read + assembly QC stats (Q20/Q30, depth)
+  - samtools
+
+  # Web backend (FastAPI serves the GUI under OOD)
+  - fastapi>=0.115.0
+  - uvicorn-standard
+  - aiofiles
+  - jinja2
+  - pyyaml
+
+  # pydantic v2 via pip to pin the major version
+  - pip:
+      - pydantic>=2.0.0
+
+# Notes:
+#  - IRMA bundles its FLU and CoV reference modules; no separate DB download.
+#  - GenoFLU's reference set (dependencies/fastas + genotype_key.xlsx) ships
+#    inside the conda package; run_genoflu.py resolves it relative to genoflu.py.
+#    To pin a newer genotype key, point config.py's genoflu_db at an out-of-tree
+#    dependencies/ dir.
