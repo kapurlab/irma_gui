@@ -896,7 +896,27 @@ _CATEGORY_ORDER = {
 }
 
 
+def _coverage_figure_label(name: str) -> str:
+    """Per-figure label for IRMA's coverage outputs so the Results list
+    distinguishes segments instead of repeating "IRMA coverage figure".
+
+    IRMA names each diagram after its reference (e.g. A_HA_H5-coverageDiagram.pdf,
+    A_PB2-coverageDiagram.pdf); READ_PERCENTAGES.pdf is the per-segment read share.
+    """
+    if name == "READ_PERCENTAGES.pdf":
+        return "IRMA read percentages (all segments)"
+    ref = name[:-len("-coverageDiagram.pdf")] if name.endswith("-coverageDiagram.pdf") else name
+    parts = ref.split("_")
+    gene = parts[1].upper() if len(parts) >= 2 and parts[1] else ref.upper()
+    segnum = meta_mod.SEGMENT_NUMBER.get(gene)
+    if segnum:
+        return f"IRMA coverage — segment {segnum} {gene} ({ref})"
+    return f"IRMA coverage — {ref}"
+
+
 def _result_label(rel: str, category: Optional[str]) -> str:
+    if category == "coverage_figure":
+        return _coverage_figure_label(Path(rel).name)
     return {
         "report_pdf": "Report (PDF)",
         "stats_xlsx": "Statistics workbook (Excel)",
