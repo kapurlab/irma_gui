@@ -1,0 +1,7 @@
+---
+name: IRMA (sandbox)
+description: "Influenza / SARS-CoV-2 genome assembly (CDC IRMA) with metadata-built submission FASTA and GenoFLU genotyping"
+icon: fa://virus
+category: Bioinformatics
+subcategory: Viral Genomics
+role: batch_connect
