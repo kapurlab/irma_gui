@@ -9,6 +9,17 @@ const APP_VERSION = "0.1.0";
 const IRMA_MODULES = ["FLU", "CoV"];
 const HEADER_STYLES = ["ncbi", "strain"];
 
+// Example hints shown as placeholders in the metadata editor. The strain name is
+// auto-built as A/host/state/sample/year(subtype); blanks become unknown_*.
+const META_FIELD_EXAMPLES = {
+  organism: "Influenza A virus",
+  host: "chicken",
+  state: "California",
+  collection_year: "2023",
+  passage: "original",
+  subtype: "H5N1",
+};
+
 function fileIcon(name) {
   if (name.endsWith(".json")) return "📁";
   if (name.endsWith(".tsv")) return "📊";
@@ -60,6 +71,12 @@ export default function App() {
   const [irmaTables, setIrmaTables] = useState({});        // key -> parsed irma-table
   const [activeRun, setActiveRun] = useState(null);
   const [queueInfo, setQueueInfo] = useState({ total: 0, done: 0 });
+
+  // Current-run pane: searchable/date-filterable list of runs in the project
+  const [projectRuns, setProjectRuns] = useState({});   // project -> [run summaries]
+  const [runFilter, setRunFilter] = useState("");
+  const [runDateStart, setRunDateStart] = useState("");
+  const [runDateEnd, setRunDateEnd] = useState("");
 
   // IRMA run config
   const [irmaModule, setIrmaModule] = useState("FLU");
@@ -186,6 +203,11 @@ export default function App() {
       if (inputsByProj[first] === undefined) loadInputs(first);
     }
   }, [projects]);
+
+  // Load the run summaries whenever the active project changes.
+  useEffect(() => {
+    if (activeProject) loadProjectRuns(activeProject);
+  }, [activeProject]);
 
   function fetchSamples(name) {
     return fetch(`./api/projects/${encodeURIComponent(name)}/samples`)
@@ -322,6 +344,42 @@ export default function App() {
     });
   }
 
+  // Select-all: toggle every sample in a project on/off in one click.
+  function toggleAllChecked(project, list, select) {
+    setCheckedKeys((m) => {
+      const next = { ...m };
+      (list || []).forEach((s) => {
+        const key = sampleKey(project, s);
+        if (select) next[key] = { project, ...s };
+        else delete next[key];
+      });
+      return next;
+    });
+  }
+
+  // Load the run summaries for the Current-run results pane.
+  function loadProjectRuns(project) {
+    if (!project) return;
+    fetch(`./api/projects/${encodeURIComponent(project)}/runs`)
+      .then((r) => r.json())
+      .then((data) => setProjectRuns((m) => ({ ...m, [project]: data.runs || [] })))
+      .catch(() => setProjectRuns((m) => ({ ...m, [project]: [] })));
+  }
+
+  // Apply the search box + date range to a project's run list.
+  function visibleRuns(project) {
+    const rows = projectRuns[project] || [];
+    const q = runFilter.trim().toLowerCase();
+    const start = runDateStart ? new Date(runDateStart + "T00:00:00").getTime() / 1000 : null;
+    const end = runDateEnd ? new Date(runDateEnd + "T23:59:59").getTime() / 1000 : null;
+    return rows.filter((r) => {
+      if (q && !r.sample.toLowerCase().includes(q)) return false;
+      if (start != null && (r.mtime || 0) < start) return false;
+      if (end != null && (r.mtime || 0) > end) return false;
+      return true;
+    });
+  }
+
   function loadSampleResults(project, s) {
     const key = sampleKey(project, s);
     setSampleResults((m) => ({ ...m, [key]: { ...(m[key] || {}), loading: true } }));
@@ -429,6 +487,7 @@ export default function App() {
               loadIrmaTable(samp.project, samp);
             }
             loadProjects();
+            loadProjectRuns(samp ? samp.project : activeProject);
           })
           .catch(() => {})
           .finally(() => done());
@@ -806,6 +865,29 @@ export default function App() {
                             No FASTQ files yet — add some from the <strong>Inputs</strong> pane on the right.
                           </div>
                         )}
+                        {samples[proj.name]?.length > 0 && (() => {
+                          const list = samples[proj.name];
+                          const total = list.length;
+                          const selected = list.filter((s) => checkedKeys[sampleKey(proj.name, s)]).length;
+                          const allChecked = selected === total;
+                          return (
+                            <div
+                              className="sample-name-row"
+                              style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0 6px", borderBottom: "1px solid var(--border, #eee)", marginBottom: 4 }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={allChecked}
+                                ref={(el) => { if (el) el.indeterminate = selected > 0 && !allChecked; }}
+                                onChange={() => toggleAllChecked(proj.name, list, !allChecked)}
+                                title="Select all samples in this project"
+                              />
+                              <span className="muted" style={{ fontSize: 12 }}>
+                                Select all ({selected}/{total})
+                              </span>
+                            </div>
+                          );
+                        })()}
                         {samples[proj.name]?.map((s) => {
                           const key = sampleKey(proj.name, s);
                           const res = sampleResults[key];
@@ -1107,6 +1189,14 @@ export default function App() {
               </div>
               <div className="form-hint" style={{ marginBottom: 10 }}>
                 Per-sample fields used to build influenza submission FASTA headers. The <strong>sample</strong> column is the match key (read-only). Edit cells inline and click Save, or manage via Excel below.
+                <br />
+                <span style={{ color: "var(--muted)" }}>
+                  All fields are <strong>optional</strong>. Headers are built as
+                  {" "}<code>A/host/state/sample/year(subtype)</code> — e.g.{" "}
+                  <code>A/chicken/California/24-000127-003/2023(H5N1)</code>. Any field
+                  left blank becomes <code>unknown_host</code>, <code>unknown_subtype</code>, etc.
+                  <strong> subtype</strong> is the H/N call (e.g. <code>H5N1</code>), prefilled from IRMA when available.
+                </span>
               </div>
 
               {!activeProject ? (
@@ -1148,8 +1238,9 @@ export default function App() {
                                       <input
                                         style={{ padding: "3px 6px", fontSize: 12, borderRadius: 6, width: "100%", minWidth: 80 }}
                                         value={row[f] || ""}
+                                        placeholder={META_FIELD_EXAMPLES[f] ? `e.g. ${META_FIELD_EXAMPLES[f]}` : ""}
                                         onChange={(e) => updateMetaCell(activeProject, row.sample, f, e.target.value)}
-                                        title={`${f} for ${row.sample}`}
+                                        title={`${f} for ${row.sample}${META_FIELD_EXAMPLES[f] ? ` (e.g. ${META_FIELD_EXAMPLES[f]})` : ""}`}
                                       />
                                     )}
                                   </td>
@@ -1311,6 +1402,85 @@ export default function App() {
                   No active run. Select samples, set options, and Run. Results for any sample are shown below.
                 </div>
               )}
+
+              {/* Runs in this project — searchable / date-filterable */}
+              {activeProject && (() => {
+                const rows = visibleRuns(activeProject);
+                const total = (projectRuns[activeProject] || []).length;
+                const setQuick = (days) => {
+                  const end = new Date();
+                  const start = new Date();
+                  start.setDate(end.getDate() - days);
+                  const iso = (d) => d.toISOString().slice(0, 10);
+                  setRunDateStart(days === 0 ? iso(end) : iso(start));
+                  setRunDateEnd(iso(end));
+                };
+                return (
+                  <div style={{ marginTop: 14 }}>
+                    <div className="panel-header" style={{ marginBottom: 6 }}>
+                      <h3 style={{ margin: 0, fontSize: 13 }}>Runs in {activeProject}</h3>
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        {rows.length === total ? `${total} run${total === 1 ? "" : "s"}` : `${rows.length} of ${total}`}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
+                      <input
+                        style={{ flex: 1, minWidth: 120, padding: "3px 6px", fontSize: 12, borderRadius: 6 }}
+                        placeholder="Filter samples…"
+                        value={runFilter}
+                        onChange={(e) => setRunFilter(e.target.value)}
+                      />
+                      <button className="ghost" style={{ fontSize: 11 }} onClick={() => loadProjectRuns(activeProject)} title="Refresh">↻</button>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 8, fontSize: 12 }}>
+                      <span className="muted">Run date:</span>
+                      <input type="date" value={runDateStart} onChange={(e) => setRunDateStart(e.target.value)} style={{ fontSize: 12 }} />
+                      <span className="muted">–</span>
+                      <input type="date" value={runDateEnd} onChange={(e) => setRunDateEnd(e.target.value)} style={{ fontSize: 12 }} />
+                      <button className="ghost" style={{ fontSize: 11 }} onClick={() => setQuick(0)}>Today</button>
+                      <button className="ghost" style={{ fontSize: 11 }} onClick={() => setQuick(7)}>Last 7d</button>
+                      <button className="ghost" style={{ fontSize: 11 }} onClick={() => setQuick(30)}>Last 30d</button>
+                      {(runDateStart || runDateEnd) && (
+                        <button className="ghost" style={{ fontSize: 11 }} onClick={() => { setRunDateStart(""); setRunDateEnd(""); }}>Clear dates</button>
+                      )}
+                    </div>
+                    {rows.length === 0 ? (
+                      <div className="empty-msg" style={{ fontSize: 12 }}>
+                        {total === 0 ? "No runs yet in this project." : "No runs match the filter."}
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        {rows.map((r) => (
+                          <div
+                            key={r.sample}
+                            className="selection-box"
+                            style={{ cursor: "pointer", padding: "6px 8px" }}
+                            title="Click to open this sample's results below"
+                            onClick={() => {
+                              const s = { sample: r.sample };
+                              if (!openResults[sampleKey(activeProject, s)]) toggleResults(activeProject, s);
+                              setShowResults(true);
+                            }}
+                          >
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                              <span className="sel-name">{r.sample}</span>
+                              <span className={`run-status run-status-${r.status}`} style={{ fontSize: 11 }}>
+                                {r.status === "running" ? "● running" : r.verdict || "done"}
+                              </span>
+                            </div>
+                            <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                              {r.subtype && <>subtype <strong>{r.subtype}</strong> · </>}
+                              {r.segment_count ? <>{r.segment_count} seg · </> : null}
+                              {r.genotype && <>genotype <strong>{r.genotype}</strong> · </>}
+                              {r.mtime ? new Date(r.mtime * 1000).toLocaleString() : ""}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </section>
           </div>
         )}

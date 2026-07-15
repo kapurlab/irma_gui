@@ -143,7 +143,7 @@ def _strain(rec: Dict[str, str], subtype: Optional[str]) -> str:
         import metadata as meta_mod
         return meta_mod.strain_string(rec or {}, subtype)
     except Exception:
-        return rec.get("strain") or rec.get("sample") or "—"
+        return rec.get("sample") or "—"
 
 
 # ---------------------------------------------------------------------------

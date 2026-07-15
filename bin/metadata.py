@@ -18,8 +18,11 @@ and re-imported when a user uploads an edited copy. A run can also point at an
 arbitrary external Excel (`--metadata-xlsx`), matched on a chosen key column.
 
 Canonical fields (all optional except `sample`):
-  sample, organism, host, state, collection_year, passage, strain
-`strain`, when given, overrides the auto-built `A/host/state/sample/year` name.
+  sample, organism, host, state, collection_year, passage, subtype
+The strain name is always auto-built as `A/host/state/sample/year(subtype)`;
+any field left blank becomes `unknown_host`, `unknown_state`, `unknown_year`,
+`unknown_subtype`, so headers are still well-formed when metadata is sparse.
+`subtype` (e.g. H5N1) is prefilled from IRMA's HA/NA call but user-editable.
 
 This module is pure-stdlib + openpyxl and is imported by both the pipeline
 (`bin/`) and the FastAPI backend (which adds `bin/` to sys.path).
@@ -33,7 +36,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Canonical metadata fields, in display/column order.
-FIELDS = ["sample", "organism", "host", "state", "collection_year", "passage", "strain"]
+FIELDS = ["sample", "organism", "host", "state", "collection_year", "passage", "subtype"]
 DEFAULT_ORGANISM = "Influenza A virus"
 
 METADATA_JSON = "sample_metadata.json"
@@ -50,11 +53,13 @@ _HEADER_ALIASES = {
     "collection_year": ["collection_year", "collectionyear", "year",
                          "collection year", "collection date", "collection_date", "date"],
     "passage": ["passage", "passage history", "passage_history"],
-    "strain": ["strain", "strain name", "strain_name", "isolate name", "full name"],
+    "subtype": ["subtype", "sub type", "serotype", "hn", "h/n", "hn subtype",
+                "hnsubtype", "strain"],
 }
 
 # Influenza-A segment metadata for descriptive submission deflines.
 SEGMENT_NUMBER = {"PB2": 1, "PB1": 2, "PA": 3, "HA": 4, "NP": 5, "NA": 6, "MP": 7, "NS": 8}
+# Canonical NCBI gene-product descriptions for the submission defline.
 GENE_FULL_NAME = {
     "PB2": "polymerase PB2 (PB2)",
     "PB1": "polymerase PB1 (PB1)",
@@ -62,8 +67,8 @@ GENE_FULL_NAME = {
     "HA": "hemagglutinin (HA)",
     "NP": "nucleoprotein (NP)",
     "NA": "neuraminidase (NA)",
-    "MP": "matrix protein (M1, M2) (MP)",
-    "NS": "non-structural protein (NS1, NEP) (NS)",
+    "MP": "matrix protein 1 (M1) and matrix protein 2 (M2) (MP)",
+    "NS": "nonstructural protein 1 (NS1) and nuclear export protein (NEP) (NS)",
 }
 
 
@@ -245,22 +250,27 @@ def _match_loose(table: Dict[str, Dict[str, str]], sample: str) -> Optional[Dict
 def strain_string(rec: Dict[str, str], subtype: Optional[str] = None) -> str:
     """Build the influenza strain string from a record.
 
-    Uses an explicit `strain` override if present, else assembles
-    `A/host/state/sample/year`, dropping any missing components rather than
-    emitting empty slashes. Appends `(H?N?)` subtype when supplied.
+    Always assembles `A/host/state/sample/year(subtype)`. Blank fields become
+    `unknown_host`, `unknown_state`, `unknown_year`, so the header is still
+    well-formed when metadata is sparse. The subtype comes from the record's
+    `subtype` field if set, else the `subtype` argument (IRMA's HA/NA call).
     """
-    if rec.get("strain"):
-        base = rec["strain"].strip()
-    else:
-        parts = ["A"]
-        for f in ("host", "state", "sample", "collection_year"):
-            v = (rec.get(f) or "").strip()
-            if v:
-                parts.append(v)
-        base = "/".join(parts) if len(parts) > 1 else (rec.get("sample") or "unknown")
-    # Only append an influenza-style (HxNx) subtype — never a module label like "CoV".
-    if subtype and re.match(r"^H\d", subtype.strip()) and "?" not in subtype:
-        base = f"{base}({subtype})"
+    host = (rec.get("host") or "").strip() or "unknown_host"
+    state = (rec.get("state") or "").strip() or "unknown_state"
+    sample = (rec.get("sample") or "").strip() or "unknown_sample"
+    year = (rec.get("collection_year") or "").strip() or "unknown_year"
+    base = f"A/{host}/{state}/{sample}/{year}"
+    # Subtype precedence: explicit metadata field, else IRMA's call.
+    eff = (rec.get("subtype") or "").strip() or (subtype or "").strip()
+    organism = (rec.get("organism") or DEFAULT_ORGANISM)
+    is_flu = "influenza" in organism.lower()
+    if eff and re.match(r"^H\d", eff) and "?" not in eff:
+        # A clean influenza-style (HxNx) subtype.
+        base = f"{base}({eff})"
+    elif is_flu:
+        # Influenza sample with no usable subtype call yet.
+        base = f"{base}(unknown_subtype)"
+    # else: a non-influenza module (e.g. CoV) — no (HxNx) suffix.
     return base
 
 
@@ -278,8 +288,9 @@ def submission_defline(rec: Dict[str, str], gene: str, subtype: Optional[str],
     if style == "strain":
         return f"{strain}_{gene}"
     segnum = SEGMENT_NUMBER.get(gene)
+    # NCBI-submission style: `SeqN [organism=...](strain) segment N, <product> gene, complete cds.`
+    seq_id = f"Seq{segnum}" if segnum else f"{strain}_{gene}"
     seg_txt = f"segment {segnum}, " if segnum else ""
     # Influenza segments get a "<product> gene"; other genomes just name the gene.
     desc = f"{GENE_FULL_NAME[gene]} gene" if gene in GENE_FULL_NAME else gene
-    return (f"{strain}_{gene} [organism={organism}] [strain={strain}] "
-            f"{seg_txt}{desc}, complete cds")
+    return f"{seq_id} [organism={organism}]({strain}) {seg_txt}{desc}, complete cds."

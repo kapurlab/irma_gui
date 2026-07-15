@@ -23,6 +23,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
     Image,
+    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -138,6 +139,107 @@ def _depth_bar(segments: List[Dict[str, Any]], outpath: Path) -> bool:
         return True
     except Exception:
         return False
+
+
+def _read_cov_depths(path: Path):
+    """Return (reference_name, [depth per position]) from an IRMA coverage table.
+    Mirrors irma_pipeline._read_coverage_table so the report is self-contained."""
+    import csv
+    ref = ""
+    depths: List[float] = []
+    try:
+        with path.open(newline="", encoding="utf-8", errors="replace") as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            depth_key = ref_key = None
+            for fld in (reader.fieldnames or []):
+                low = (fld or "").strip().lower()
+                if low in ("coverage depth", "coverage_depth", "depth"):
+                    depth_key = fld
+                elif low in ("reference_name", "reference name"):
+                    ref_key = fld
+            for row in reader:
+                if ref_key and not ref:
+                    ref = (row.get(ref_key) or "").strip()
+                if depth_key is not None:
+                    try:
+                        depths.append(float(row.get(depth_key) or 0))
+                    except (ValueError, TypeError):
+                        depths.append(0.0)
+    except OSError:
+        pass
+    return ref, depths
+
+
+def _cov_gene(ref: str) -> str:
+    parts = (ref or "").split("_")
+    return parts[1].upper() if len(parts) >= 2 and parts[1] else (parts[0].upper() if parts else "?")
+
+
+def _coverage_plot(ref: str, depths: List[float], outpath: Path) -> bool:
+    """Per-position coverage-depth plot for one segment (matplotlib)."""
+    if not depths:
+        return False
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        x = list(range(1, len(depths) + 1))
+        fig, ax = plt.subplots(figsize=(6.8, 2.2))
+        ax.fill_between(x, depths, color="#4C8C8A", alpha=0.35, linewidth=0)
+        ax.plot(x, depths, color="#2F6F6C", lw=0.7)
+        ax.axhline(10, color="#C46A6A", lw=0.8, ls="--")
+        ax.set_xlabel("reference position (nt)  — dashed line = 10X")
+        ax.set_ylabel("depth (X)")
+        ax.margins(x=0)
+        ax.spines[["top", "right"]].set_visible(False)
+        fig.tight_layout()
+        fig.savefig(outpath, dpi=150)
+        plt.close(fig)
+        return True
+    except Exception:
+        return False
+
+
+def _coverage_section(outdir: Path, assets: Path, ss) -> List[Any]:
+    """Build the appended per-segment IRMA coverage plots (one per segment),
+    regenerated from IRMA's own coverage tables under <outdir>/irma/tables/."""
+    tables_dir = outdir / "irma" / "tables"
+    cov_tables = sorted(tables_dir.glob("*-coverage.txt")) if tables_dir.is_dir() else []
+    if not cov_tables:
+        return []
+    try:
+        import metadata as meta_mod
+        seg_num = meta_mod.SEGMENT_NUMBER
+    except Exception:
+        seg_num = {}
+
+    entries = []
+    for tbl in cov_tables:
+        ref, depths = _read_cov_depths(tbl)
+        if not ref:
+            ref = tbl.name.replace("-coverage.txt", "")
+        gene = _cov_gene(ref)
+        entries.append((seg_num.get(gene, 99), gene, ref, depths))
+    entries.sort(key=lambda e: (e[0], e[2]))
+
+    story: List[Any] = [PageBreak(),
+                        Paragraph("IRMA per-segment coverage", ss["H2"]),
+                        Paragraph(
+                            "Per-position read depth for each assembled segment, from IRMA's coverage "
+                            "tables. The dashed line marks the 10X minimum used in the QC verdict.",
+                            ss["Body"])]
+    n = 0
+    for order, gene, ref, depths in entries:
+        fig = assets / f"cov_{ref}.png"
+        if not _coverage_plot(ref, depths, fig):
+            continue
+        seg_txt = f"segment {order} " if order != 99 else ""
+        story.append(Paragraph(f"IRMA coverage — {seg_txt}{gene} ({ref})", ss["Body"]))
+        story.append(Image(str(fig), width=6.6 * inch, height=_img_h(fig, 6.6)))
+        story.append(Spacer(1, 6))
+        n += 1
+    return story if n else []
 
 
 def _img_h(path: Path, width_in: float) -> float:
@@ -313,6 +415,9 @@ def write_pdf(ctx: Dict[str, Any], path: Path, outdir: Path) -> None:
         "validated procedures (WOAH Terrestrial Manual 3.3.4). Submit sequences under the strain name "
         "shown above only after metadata review.", ss["Small"]))
 
+    # --- Appended IRMA per-segment coverage plots (one per segment) ---
+    story.extend(_coverage_section(outdir, assets, ss))
+
     doc = SimpleDocTemplate(
         str(path), pagesize=letter,
         topMargin=0.6 * inch, bottomMargin=0.6 * inch,
@@ -327,4 +432,4 @@ def _strain(rec: Dict[str, str], subtype) -> str:
         import metadata as meta_mod
         return meta_mod.strain_string(rec or {}, subtype)
     except Exception:
-        return (rec or {}).get("strain") or (rec or {}).get("sample") or "—"
+        return (rec or {}).get("sample") or "—"

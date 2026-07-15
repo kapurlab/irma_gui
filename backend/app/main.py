@@ -632,6 +632,43 @@ def api_sample_irma_table(name: str, sample: str):
     })
 
 
+@app.get("/api/projects/{name}/runs")
+def api_project_runs(name: str):
+    """Summary of every IRMA run in a project — one row per sample that has a
+    run dir. Powers the 'Current run' results pane (searchable, date-filterable)
+    so users don't have to reopen Projects to see what ran."""
+    project_dir = _get_project_dir(name)
+    if project_dir is None:
+        raise HTTPException(404, f"Project not found: {name}")
+    runs_root = project_dir / _TOOL_SUBDIR
+    rows: List[Dict[str, Any]] = []
+    if runs_root.is_dir():
+        for run_dir in sorted(runs_root.iterdir(), key=_safe_mtime, reverse=True):
+            if not run_dir.is_dir():
+                continue
+            asm = {}
+            try:
+                asm = json.loads((run_dir / "assembly_stats.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                asm = {}
+            geno = {}
+            try:
+                geno = json.loads((run_dir / "genoflu_result.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                geno = {}
+            rows.append({
+                "sample": run_dir.name,
+                "status": _sample_run_status(run_dir),
+                "mtime": _safe_mtime(run_dir),
+                "subtype": asm.get("subtype") or "",
+                "segment_count": asm.get("segment_count") or 0,
+                "verdict": (asm.get("overall_verdict") or "").upper(),
+                "genotype": geno.get("genotype") or "",
+                "has_report": (run_dir / "report.pdf").is_file(),
+            })
+    return JSONResponse({"project": name, "runs": rows})
+
+
 @app.get("/api/projects/{name}/file")
 def api_project_file(name: str, path: str = Query(...), inline: int = 0):
     project_dir = _get_project_dir(name)
@@ -870,8 +907,10 @@ def _result_category(rel: str) -> Optional[str]:
         return "submission_fasta"
     if name == "assembly.fasta":
         return "assembly_fasta"
-    if name in ("genoflu_genotype.xlsx", "genoflu_genotype.tsv"):
-        return "genoflu_table"
+    if name == "genoflu_genotype.xlsx":
+        return "genoflu_table_xlsx"
+    if name in ("genoflu_genotype.tsv", "genoflu_genotype.txt"):
+        return "genoflu_table_tsv"
     if name == "genoflu_result.json":
         return "genoflu_json"
     if name == "assembly_stats.json":
@@ -891,8 +930,9 @@ def _result_category(rel: str) -> Optional[str]:
 
 _CATEGORY_ORDER = {
     "report_pdf": 0, "stats_xlsx": 1, "submission_fasta": 2, "assembly_fasta": 3,
-    "genoflu_table": 4, "genoflu_json": 5, "assembly_stats": 6, "fastq_qc": 7,
-    "ha_cleavage": 8, "coverage_figure": 9, "run_manifest": 10, "log": 99,
+    "genoflu_table_xlsx": 4, "genoflu_table_tsv": 5, "genoflu_json": 6,
+    "assembly_stats": 7, "fastq_qc": 8, "ha_cleavage": 9, "coverage_figure": 10,
+    "run_manifest": 11, "log": 99,
 }
 
 
@@ -919,10 +959,11 @@ def _result_label(rel: str, category: Optional[str]) -> str:
         return _coverage_figure_label(Path(rel).name)
     return {
         "report_pdf": "Report (PDF)",
-        "stats_xlsx": "Statistics workbook (Excel)",
+        "stats_xlsx": "IRMA assembly & QC statistics (Excel workbook)",
         "submission_fasta": "Submission FASTA (metadata headers)",
         "assembly_fasta": "Assembly FASTA (raw IRMA consensus)",
-        "genoflu_table": "GenoFLU genotype table",
+        "genoflu_table_xlsx": "GenoFLU genotype — per-segment lineages (Excel workbook)",
+        "genoflu_table_tsv": "GenoFLU genotype — per-segment lineages (tab-delimited text)",
         "genoflu_json": "GenoFLU result (JSON)",
         "assembly_stats": "Assembly + coverage stats (JSON)",
         "fastq_qc": "Input read QC (JSON)",
