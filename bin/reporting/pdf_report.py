@@ -84,7 +84,12 @@ def _banner(text: str, fill, ss) -> Table:
 
 def _grid(data, ss, col_in, small=False, verdict_col=None):
     style = ss["Small"] if small else ss["Cell"]
-    body = [[Paragraph(str(c), style) for c in row] for row in data]
+    # Header cells are Paragraph flowables, which ignore the table's TEXTCOLOR,
+    # so give the first row its own white, bold style for contrast on the teal.
+    hdr_style = ParagraphStyle("GridHdr", parent=style, textColor=colors.white,
+                               fontName="Helvetica-Bold")
+    body = [[Paragraph(str(c), hdr_style if i == 0 else style) for c in row]
+            for i, row in enumerate(data)]
     t = Table(body, colWidths=[c * inch for c in col_in], repeatRows=1)
     cmds = [
         ("BACKGROUND", (0, 0), (-1, 0), TEAL),
@@ -170,6 +175,53 @@ def _read_cov_depths(path: Path):
     return ref, depths
 
 
+def _read_variants(path: Path) -> List[Dict[str, str]]:
+    """Return the minority-variant SNPs IRMA called for one segment, from its
+    <ref>-variants.txt table. Each entry: position, consensus/minority allele,
+    minority frequency and count. Read by header name so column order/extra
+    columns (e.g. Phase) don't matter."""
+    import csv
+    out: List[Dict[str, str]] = []
+    try:
+        with path.open(newline="", encoding="utf-8", errors="replace") as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            keys = {(f or "").strip().lower(): f for f in (reader.fieldnames or [])}
+
+            def col(*names):
+                for n in names:
+                    if n in keys:
+                        return keys[n]
+                return None
+
+            pos_k = col("position")
+            cons_k = col("consensus_allele", "consensus allele")
+            min_k = col("minority_allele", "minority allele")
+            freq_k = col("minority_frequency", "minority frequency")
+            cnt_k = col("minority_count", "minority count")
+            for row in reader:
+                pos = (row.get(pos_k) or "").strip() if pos_k else ""
+                if not pos:
+                    continue
+                try:
+                    freq = f"{float(row.get(freq_k) or 0) * 100:.1f}%"
+                except (TypeError, ValueError):
+                    freq = (row.get(freq_k) or "—").strip() if freq_k else "—"
+                out.append({
+                    "position": pos,
+                    "consensus": (row.get(cons_k) or "").strip() if cons_k else "",
+                    "minority": (row.get(min_k) or "").strip() if min_k else "",
+                    "freq": freq,
+                    "count": (row.get(cnt_k) or "").strip() if cnt_k else "",
+                })
+    except OSError:
+        pass
+    try:
+        out.sort(key=lambda v: int(v["position"]))
+    except (ValueError, KeyError):
+        pass
+    return out
+
+
 def _cov_gene(ref: str) -> str:
     parts = (ref or "").split("_")
     return parts[1].upper() if len(parts) >= 2 and parts[1] else (parts[0].upper() if parts else "?")
@@ -224,10 +276,13 @@ def _coverage_section(outdir: Path, assets: Path, ss) -> List[Any]:
     entries.sort(key=lambda e: (e[0], e[2]))
 
     story: List[Any] = [PageBreak(),
-                        Paragraph("IRMA per-segment coverage", ss["H2"]),
+                        Paragraph("IRMA per-segment coverage &amp; SNPs", ss["H2"]),
                         Paragraph(
                             "Per-position read depth for each assembled segment, from IRMA's coverage "
-                            "tables. The dashed line marks the 10X minimum used in the QC verdict.",
+                            "tables. The dashed line marks the 10X minimum used in the QC verdict. "
+                            "Below each plot are the minority-variant SNPs IRMA called for that segment "
+                            "(from its variants table): the reference position, the consensus and minority "
+                            "alleles, and the minority allele's frequency and read count.",
                             ss["Body"])]
     n = 0
     for order, gene, ref, depths in entries:
@@ -237,7 +292,19 @@ def _coverage_section(outdir: Path, assets: Path, ss) -> List[Any]:
         seg_txt = f"segment {order} " if order != 99 else ""
         story.append(Paragraph(f"IRMA coverage — {seg_txt}{gene} ({ref})", ss["Body"]))
         story.append(Image(str(fig), width=6.6 * inch, height=_img_h(fig, 6.6)))
-        story.append(Spacer(1, 6))
+        # SNPs for this segment, from its variants table (kept beside the plot).
+        variants = _read_variants(tables_dir / f"{ref}-variants.txt")
+        if variants:
+            story.append(Paragraph(f"SNPs — {gene} ({len(variants)})", ss["Small"]))
+            data = [["Position", "Consensus", "Minority", "Minority freq", "Minority count"]]
+            for v in variants:
+                data.append([v["position"], v["consensus"] or "—", v["minority"] or "—",
+                             v["freq"] or "—", v["count"] or "—"])
+            story.append(_grid(data, ss, [1.1, 1.1, 1.0, 1.3, 1.3], small=True))
+        else:
+            story.append(Paragraph("SNPs — none: no minority variants called for this segment.",
+                                   ss["Small"]))
+        story.append(Spacer(1, 8))
         n += 1
     return story if n else []
 

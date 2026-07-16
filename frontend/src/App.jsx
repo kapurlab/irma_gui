@@ -410,6 +410,17 @@ export default function App() {
     }
   }
 
+  // Switch the bottom Results pane to a given sample (unconditionally), loading
+  // its data if we don't have it yet. Used by the "Ran samples" list so clicking
+  // any sample there — even one already open — drives the Results pane.
+  function showSampleResults(project, s) {
+    const key = sampleKey(project, s);
+    setSelectedResultKey(key);
+    setShowResults(true);
+    if (!sampleResults[key]) loadSampleResults(project, s);
+    if (!irmaTables[key]) loadIrmaTable(project, s);
+  }
+
   async function runSamples(list) {
     if (running || !list.length) return;
     setShowLogs(true);
@@ -1412,10 +1423,10 @@ export default function App() {
               )}
             </section>
 
-            {/* RIGHT — current run status */}
+            {/* RIGHT — ran samples (active run status + this project's runs) */}
             <section className="panel">
               <div className="panel-header">
-                <h2>Current run</h2>
+                <h2>Ran samples</h2>
                 {jobId && <span className="muted" style={{ fontSize: 12 }}>job {jobId.slice(0, 8)}</span>}
               </div>
               {activeRun ? (
@@ -1486,17 +1497,18 @@ export default function App() {
                       </div>
                     ) : (
                       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        {rows.map((r) => (
+                        {rows.map((r) => {
+                          const isSel = selectedResultKey === sampleKey(activeProject, { sample: r.sample });
+                          return (
                           <div
                             key={r.sample}
                             className="selection-box"
-                            style={{ cursor: "pointer", padding: "6px 8px" }}
-                            title="Click to open this sample's results below"
-                            onClick={() => {
-                              const s = { sample: r.sample };
-                              if (!openResults[sampleKey(activeProject, s)]) toggleResults(activeProject, s);
-                              setShowResults(true);
+                            style={{
+                              cursor: "pointer", padding: "6px 8px",
+                              outline: isSel ? "2px solid var(--accent, #4C8C8A)" : "none",
                             }}
+                            title="Click to show this sample's results below"
+                            onClick={() => showSampleResults(activeProject, { sample: r.sample })}
                           >
                             <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                               <span className="sel-name">{r.sample}</span>
@@ -1511,7 +1523,8 @@ export default function App() {
                               {r.mtime ? new Date(r.mtime * 1000).toLocaleString() : ""}
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>
