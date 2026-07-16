@@ -40,6 +40,7 @@ _GENOFLU_DB_DEFAULT = _first_existing(
 DEFAULTS: Dict[str, Any] = {
     "projects_root": str(Path.home() / "projects"),
     "shared_projects_root": _DEFAULT_SHARED_PROJECTS_ROOT,
+    "saved_project_roots": [],
     # IRMA module to assemble with: FLU (influenza A/B) or CoV (SARS-CoV-2).
     "irma_module": "FLU",
     # GenoFLU genotyping of the assembled influenza-A genome.
