@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import "./App.css";
+import ThemeToggle from "./ThemeToggle";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -711,9 +712,12 @@ export default function App() {
             <p>Influenza &amp; SARS-CoV-2 genome assembly via CDC IRMA &mdash; with GenoFLU genotyping and submission-header generation</p>
           </div>
         </div>
-        <div className="status-pill">
-          <span className="dot" data-state={jobStatus} />
-          <span>{statusText}</span>
+        <div className="header-actions">
+          <ThemeToggle />
+          <div className="status-pill">
+            <span className="dot" data-state={jobStatus} />
+            <span>{statusText}</span>
+          </div>
         </div>
       </header>
 
