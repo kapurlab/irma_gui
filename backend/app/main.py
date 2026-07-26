@@ -1046,6 +1046,260 @@ def api_job_file(job_id: str, path: str = Query(...), inline: int = 0):
 # ---------------------------------------------------------------------------
 # Static frontend — must be last
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# The Results pane — every completed sample in one searchable table.
+#
+# Modelled on vSNP's Step 1 Results. The per-sample endpoints elsewhere in
+# this file answer "tell me about THIS one", which is why results were only ever
+# visible by expanding a row in the Projects tree; there was no way to see, sort,
+# search or export everything a project had produced. This answers that.
+# ---------------------------------------------------------------------------
+_RP_SUBDIR = _TOOL_SUBDIR
+
+def _rp_finished_at(run_dir: Path) -> str:
+    """When this run finished, as an ISO string ("" if unknown).
+
+    Prefer the pipeline's own record over filesystem mtimes: a later re-read or
+    an rsync can touch files long after the analysis actually ran."""
+    try:
+        data = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+        for key in ("pipeline_finished_at", "finished_at_utc", "finished_at", "timestamp"):
+            val = str(data.get(key) or "").strip()
+            if val:
+                return val
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        newest = max((p.stat().st_mtime for p in run_dir.rglob("*") if p.is_file()), default=0)
+        if newest:
+            from datetime import datetime, timezone
+            return datetime.fromtimestamp(newest, tz=timezone.utc).isoformat()
+    except (OSError, ValueError):
+        pass
+    return ""
+
+
+def _rp_flags(run_dir: Path) -> Dict[str, Any]:
+    """pass / review / fail plus reasons.
+
+    The run's exit status outranks any QC verdict: qc.json grades the INPUT, so a
+    run whose analysis step exited non-zero — producing nothing — would otherwise
+    still be reported as "pass". A Results pane that says PASS for a failed run is
+    worse than no pane at all."""
+    level, reasons = "pass", []
+    try:
+        qc = json.loads((run_dir / "qc.json").read_text(encoding="utf-8"))
+        verdict = str(qc.get("verdict") or "").strip().lower()
+        if verdict in ("fail", "failed"):
+            level = "fail"
+        elif verdict in ("review", "warn", "warning"):
+            level = "review"
+        notes = qc.get("notes") or qc.get("reasons") or []
+        if isinstance(notes, str):
+            notes = [notes]
+        reasons = [str(n) for n in notes if str(n).strip()]
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        man = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+        rc = man.get("return_code")
+        if rc not in (None, 0):
+            level = "fail"
+            lines = [l.strip() for l in str(man.get("stderr_tail") or "").splitlines() if l.strip()]
+            detail = ""
+            for i, l in enumerate(lines):
+                if l.startswith("*** ERROR"):
+                    detail = next((x for x in lines[i + 1:]
+                                   if not x.startswith(("Command line:", "Running:"))), "")
+                    break
+            if not detail:
+                detail = next((l for l in lines if "error" in l.lower()), "")
+            if not detail:
+                detail = next((l for l in reversed(lines)
+                               if not l.startswith(("Command line:", "Running:"))), "")
+            reasons.insert(0, "the analysis exited %s%s" % (rc, (" — " + detail[:120]) if detail else ""))
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {"level": level, "reasons": reasons}
+
+
+def _rp_json(run_dir: Path, name: str) -> Dict[str, Any]:
+    """Read one of the run's small result JSONs; {} when absent or malformed."""
+    try:
+        data = json.loads((run_dir / name).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+_rp_status = _sample_run_status
+
+
+def _rp_metrics(run_dir: Path) -> Dict[str, Any]:
+    """Subtype / genotype plus assembled-segment count."""
+    geno = _rp_json(run_dir, "genoflu_result.json")
+    stats = _rp_json(run_dir, "assembly_stats.json")
+    # `segments` is a per-gene list of dicts; the count lives in segment_count.
+    # Returning the list would dump a screenful of JSON into a table cell.
+    segments = stats.get("segment_count")
+    if segments is None:
+        seglist = stats.get("segments")
+        segments = len(seglist) if isinstance(seglist, list) else None
+    verdict = str(stats.get("overall_verdict") or "").strip() or None
+    return {
+        "subtype": stats.get("subtype") or geno.get("genotype") or None,
+        "segments": segments,
+        "genotype": geno.get("genotype") or None,
+        "verdict": verdict,
+    }
+
+
+_RP_CROSS_PROBES = [
+    ("kraken", "krona", "\U0001F4CA Krona", "kraken", "*_krona.html",
+     "./api/projects/{p}/kraken/samples/{s}/krona"),
+]
+
+
+def _rp_cross_tool(project: str, project_dir: Path, sample: str) -> List[Dict]:
+    """Sibling tools' outputs for the same sample.
+
+    Every tool builds the same project skeleton, so a sample analysed here may
+    also have a Kraken run. Those files live outside this tool's run dir, which is
+    exactly why they never appeared in a results view."""
+    out: List[Dict] = []
+    for tool, kind, label, subdir, glob, href in _RP_CROSS_PROBES:
+        base = project_dir / subdir
+        if not base.is_dir():
+            continue
+        d = base / sample
+        if not d.is_dir():
+            try:
+                cands = sorted(x for x in base.iterdir()
+                               if x.is_dir() and x.name.startswith(sample + "_"))
+            except OSError:
+                cands = []
+            d = cands[0] if cands else None
+        if d is None:
+            continue
+        try:
+            if not any(d.rglob(glob)):
+                continue
+        except OSError:
+            continue
+        out.append({"tool": tool, "kind": kind, "label": label,
+                    "href": href.format(p=project, s=sample)})
+    return out
+
+
+def _rp_rows(name: str, include_all: bool = False) -> List[Dict]:
+    project_dir = _get_project_dir(name)
+    if project_dir is None:
+        raise HTTPException(404, "Project not found: %s" % name)
+    root = project_dir / _RP_SUBDIR
+    rows: List[Dict] = []
+    if not root.is_dir():
+        return rows
+    try:
+        entries = sorted(p for p in root.iterdir() if p.is_dir())
+    except (OSError, PermissionError):
+        return rows
+    for d in entries:
+        rows.append({
+            "sample": d.name,
+            "status": _rp_status(d),
+            "run_date": _rp_finished_at(d),
+            "run_dir": str(d),
+            "flags": _rp_flags(d),
+            "metrics": _rp_metrics(d),
+            "files": _collect_result_files(d, include_all),
+            "cross_tool": _rp_cross_tool(name, project_dir, d.name),
+        })
+    rows.sort(key=lambda r: (r["run_date"] or "", r["sample"]), reverse=True)
+    return rows
+
+
+def _rp_filter(rows: List[Dict], start: str, end: str, q: str) -> List[Dict]:
+    """Apply the pane's filters server-side too, so an export matches the view."""
+    ql = (q or "").strip().lower()
+    out = []
+    for r in rows:
+        if ql and ql not in r["sample"].lower():
+            continue
+        day = (r.get("run_date") or "")[:10]
+        if start and (not day or day < start):
+            continue
+        if end and (not day or day > end):
+            continue
+        out.append(r)
+    return out
+
+
+@app.get("/api/projects/{name}/results")
+def api_project_results(name: str, all: int = Query(0)):
+    return JSONResponse({"project": name, "tool": _RP_SUBDIR,
+                         "rows": _rp_rows(name, include_all=bool(all))})
+
+
+_RP_EXPORT_COLUMNS = [("sample", "Sample"), ("status", "Status"),
+                      ("run_date", "Run date"), ("qc", "QC"),
+                      ("qc_reasons", "QC notes")] + [("subtype", "Subtype"), ("segments", "Segments"), ("genotype", "Genotype"), ("verdict", "Verdict")] + \
+                     [("run_dir", "Run directory")]
+
+
+def _rp_export_records(name, start, end, q):
+    for r in _rp_filter(_rp_rows(name), start, end, q):
+        m = r.get("metrics") or {}
+        rec = {"sample": r["sample"], "status": r["status"],
+               "run_date": (r.get("run_date") or "")[:19],
+               "qc": (r.get("flags") or {}).get("level", ""),
+               "qc_reasons": "; ".join((r.get("flags") or {}).get("reasons", [])),
+               "run_dir": r.get("run_dir", "")}
+        for key, _label in _RP_EXPORT_COLUMNS:
+            rec.setdefault(key, m.get(key))
+        yield rec
+
+
+@app.get("/api/projects/{name}/results.csv")
+def api_project_results_csv(name: str, start: str = Query(""), end: str = Query(""),
+                            q: str = Query("")):
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=[k for k, _ in _RP_EXPORT_COLUMNS], extrasaction="ignore")
+    w.writerow({k: label for k, label in _RP_EXPORT_COLUMNS})
+    for rec in _rp_export_records(name, start, end, q):
+        w.writerow(rec)
+    return Response(content=buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition":
+                             'attachment; filename="%s_irma_results.csv"' % name})
+
+
+@app.get("/api/projects/{name}/results.xlsx")
+def api_project_results_xlsx(name: str, start: str = Query(""), end: str = Query(""),
+                             q: str = Query("")):
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        raise HTTPException(501, "Excel export needs openpyxl in this tool's environment.")
+    import io
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Results"
+    ws.append([label for _, label in _RP_EXPORT_COLUMNS])
+    for rec in _rp_export_records(name, start, end, q):
+        ws.append([rec.get(k) for k, _ in _RP_EXPORT_COLUMNS])
+    for i, (_k, label) in enumerate(_RP_EXPORT_COLUMNS, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = max(12, len(label) + 2)
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(content=buf.getvalue(),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition":
+                             'attachment; filename="%s_irma_results.xlsx"' % name})
+
+
 if _FRONTEND_DIST.is_dir():
     _INDEX_HTML = _FRONTEND_DIST / "index.html"
 

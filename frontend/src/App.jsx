@@ -1,6 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./App.css";
 import ThemeToggle from "./ThemeToggle";
+import ResultsPane from "./ResultsPane";
+import { useResults } from "./useResults";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -52,12 +54,25 @@ function verdictClass(verdict) {
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
+// The tool-specific columns of the shared Results table. Everything else
+// about the pane is identical across the suite.
+const RESULT_COLUMNS = [
+  { key: "subtype", label: "Subtype" },
+  { key: "segments", label: "Segments", align: "right" },
+  { key: "genotype", label: "Genotype" },
+  { key: "verdict", label: "Verdict" },
+];
+
 export default function App() {
   const [projects, setProjects] = useState([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [newProjectName, setNewProjectName] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
   const [activeProject, setActiveProject] = useState("");
+  /* Every completed sample for the active project. Refreshed when a run
+     finishes rather than polled, matching the rest of the suite. */
+  const results = useResults(activeProject);
+  const [showResultsPane, setShowResultsPane] = useState(true);
   const [addPath, setAddPath] = useState({});
   const [sraText, setSraText] = useState({});
   const [addStatus, setAddStatus] = useState({});
@@ -67,6 +82,9 @@ export default function App() {
   const [expanded, setExpanded] = useState({});
   const [samples, setSamples] = useState({});
   const [checkedKeys, setCheckedKeys] = useState({});
+  // Filter for the Projects sample list. Its check-all acts on what this
+  // filter leaves visible, never on the whole project.
+  const [projSampleFilter, setProjSampleFilter] = useState("");
   const [openResults, setOpenResults] = useState({});
   const [sampleResults, setSampleResults] = useState({});  // key -> {loading,status,present,files}
   const [irmaTables, setIrmaTables] = useState({});        // key -> parsed irma-table
@@ -126,6 +144,9 @@ export default function App() {
       })
       .catch(() => {});
     loadProjects();
+    // The Results table is where finished work is now read, so it
+    // has to reflect the run that just ended.
+    results.reload();
     fetch("./api/jobs")
       .then((r) => r.json())
       .then((jobs) => {
@@ -334,6 +355,36 @@ export default function App() {
   const sampleKey = (project, s) => `${project}::${s.sample}`;
   const isActive = (project, s) =>
     activeRun && activeRun.project === project && activeRun.sample === s.sample;
+
+  /* Samples currently VISIBLE in a project, i.e. after the filter box. The
+     check-all below must use this and nothing else: a "select all" that also
+     queues samples the user cannot see is how people accidentally run hundreds
+     of samples instead of the handful they filtered to. */
+  function visibleSamples(project) {
+    const q = projSampleFilter.trim().toLowerCase();
+    const list = samples[project] || [];
+    return q ? list.filter((s) => String(s.sample || "").toLowerCase().includes(q)) : list;
+  }
+
+  function checkAllState(project) {
+    const vis = visibleSamples(project);
+    const on = vis.filter((s) => checkedKeys[sampleKey(project, s)]).length;
+    return { total: vis.length, on, checked: vis.length > 0 && on === vis.length,
+             indeterminate: on > 0 && on < vis.length };
+  }
+
+  function toggleCheckAllVisible(project, checked) {
+    const vis = visibleSamples(project);
+    setCheckedKeys((m) => {
+      const next = { ...m };
+      vis.forEach((s) => {
+        const k = sampleKey(project, s);
+        if (checked) next[k] = { project, ...s };
+        else delete next[k];
+      });
+      return next;
+    });
+  }
 
   function toggleChecked(project, s) {
     const key = sampleKey(project, s);
@@ -939,7 +990,29 @@ export default function App() {
                             </div>
                           );
                         })()}
-                        {samples[proj.name]?.map((s) => {
+                        {(samples[proj.name] || []).length > 0 && (
+                          <div className="sample-item" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <input
+                              type="checkbox"
+                              ref={(el) => { if (el) el.indeterminate = checkAllState(proj.name).indeterminate; }}
+                              checked={checkAllState(proj.name).checked}
+                              disabled={!visibleSamples(proj.name).length}
+                              onChange={(e) => toggleCheckAllVisible(proj.name, e.target.checked)}
+                              title="Select / deselect every sample shown here (honours the filter)"
+                            />
+                            <span className="muted" style={{ fontSize: 11 }}>
+                              {checkAllState(proj.name).on} of {checkAllState(proj.name).total} selected for run
+                            </span>
+                            <input
+                              type="search"
+                              placeholder="Filter samples…"
+                              value={projSampleFilter}
+                              onChange={(e) => setProjSampleFilter(e.target.value)}
+                              style={{ flex: "1 1 140px", minWidth: 120, fontSize: 12 }}
+                            />
+                          </div>
+                        )}
+                        {visibleSamples(proj.name).map((s) => {
                           const key = sampleKey(proj.name, s);
                           const res = sampleResults[key];
                           const hasRun = proj.irma_runs?.includes(s.sample);
@@ -1684,6 +1757,36 @@ export default function App() {
 
         {/* ════════════════════════════════════════════════════════ */}
         {/* SECTION: Pipeline Log                                    */}
+
+        {/* ════════════════════════════════════════════════════════ */}
+        {/* SECTION: Results — every completed sample, not just the last  */}
+        {/* ════════════════════════════════════════════════════════ */}
+        <div className="row-header">
+          <h2>Results</h2>
+          <button className="ghost" onClick={() => setShowResultsPane(!showResultsPane)}>
+            {showResultsPane ? "Hide" : "Show"}
+          </button>
+        </div>
+        {showResultsPane && (
+          <div className="row-grid row-grid-split">
+            {/* LEFT — run status. This tool reports progress in the
+                 Pipeline Log below; the table on the right is the record. */}
+            <section className="panel">
+              <div className="panel-header"><h2>Current Run</h2></div>
+              <div className="empty-msg">
+                Progress appears in the Pipeline Log. Completed samples are listed
+                in the Results table to the right.
+              </div>
+            </section>
+            {/* RIGHT — every completed sample, searchable (vSNP Step 1 model) */}
+            <ResultsPane
+              project={activeProject}
+              results={results}
+              columns={RESULT_COLUMNS}
+              labels={{ entity: "sample", sampleHeader: "Sample" }}
+            />
+          </div>
+        )}
         {/* ════════════════════════════════════════════════════════ */}
         <div className="row-header">
           <h2>Pipeline Log</h2>
