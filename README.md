@@ -52,4 +52,3 @@ export PYTHONPATH=/srv/kapurlab/tools/irma_gui/bin
 python bin/irma_pipeline.py --sample S --outdir OUT -r1 R1.fastq.gz -r2 R2.fastq.gz --module FLU
 ```
 
-See `CLAUDE.md` for the full architecture and conventions.
