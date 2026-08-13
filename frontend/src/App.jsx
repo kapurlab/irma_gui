@@ -8,7 +8,10 @@ import { useResults } from "./useResults";
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const APP_VERSION = "0.1.0";
+// Fallback ONLY: the header shows the backend-reported version (git
+// describe — the same string the Diagnostic Tools Dashboard shows) and
+// uses this constant just until that arrives / on installs without git.
+const APP_VERSION = "0.3.3";
 
 const IRMA_MODULES = ["FLU", "CoV"];
 const HEADER_STYLES = ["ncbi", "strain"];
@@ -105,6 +108,10 @@ export default function App() {
   const [genoFluDb, setGenoFluDb] = useState("");
   const [headerStyle, setHeaderStyle] = useState("ncbi");
 
+  // Version of the deployed checkout as reported by the backend (git
+  // describe — the same string the Diagnostic Tools Dashboard shows).
+  const [serverVersion, setServerVersion] = useState("");
+
   const [running, setRunning] = useState(false);
   const [jobId, setJobId] = useState(null);
   const [jobStatus, setJobStatus] = useState("idle");
@@ -141,6 +148,7 @@ export default function App() {
         setRunGenoflu(cfg.run_genoflu !== undefined ? cfg.run_genoflu : true);
         setGenoFluPident(cfg.genoflu_pident || 98);
         setGenoFluDb(cfg.genoflu_db || "");
+        setServerVersion(cfg.app_version || "");
         setSettingsDraft(cfg);
       })
       .catch(() => {});
@@ -759,7 +767,7 @@ export default function App() {
           <img className="app-logo" src="./irma_icon.svg" alt="IRMA logo" />
           <div>
             <h1>
-              IRMA <span className="version-tag">v{APP_VERSION}</span>
+              IRMA <span className="version-tag">{serverVersion || `v${APP_VERSION}`}</span>
             </h1>
             <p>Influenza &amp; SARS-CoV-2 genome assembly via CDC IRMA &mdash; with GenoFLU genotyping and submission-header generation</p>
           </div>
