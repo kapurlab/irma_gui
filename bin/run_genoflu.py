@@ -60,17 +60,57 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def _tool_version(cmd: List[str]) -> Optional[str]:
+def _tool_version(cmd: List[str], env: Optional[Dict[str, str]] = None) -> Optional[str]:
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
         out = (proc.stdout or "").strip() or (proc.stderr or "").strip()
         return out.splitlines()[0].strip() if out else None
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return None
 
 
+def _sibling_env_dir(name: str) -> Optional[Path]:
+    """Conda env of a sibling suite tool, or None (then PATH decides).
+
+    GenoFLU runs from genoflu_gui's env, where its version is pinned once for
+    the whole suite — a second copy in this env ties the solve to genoflu's
+    dependency tree and the two copies can drift apart. BDTOOLS_SIBLING_ENV_
+    <TOOL> is exported by the suite launcher, which resolved the env the same
+    way it resolves the one it is starting; the fallbacks cover side-by-side
+    checkouts and the per-user install layout, so this also works when the
+    backend was started some other way."""
+    explicit = os.environ.get("BDTOOLS_SIBLING_ENV_" + name.upper(), "").strip()
+    candidates = [Path(explicit)] if explicit else []
+    root = os.environ.get("BDTOOLS_TOOLS_ROOT", "").strip()
+    if root:
+        candidates.append(Path(root) / name / "env")
+    candidates.append(Path(__file__).resolve().parents[2] / name / "env")
+    home = os.environ.get("BDTOOLS_HOME", "").strip()
+    if not home:
+        xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+        home = str(Path(xdg) / "bdtools") if xdg else str(Path.home() / ".local/share/bdtools")
+    candidates.append(Path(home) / "checkouts" / name / "env")
+    for cand in candidates:
+        try:
+            if (cand / "bin").is_dir():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+_GENOFLU_ENV = _sibling_env_dir("genoflu_gui")
+
+
 def _find_genoflu() -> Optional[str]:
-    """Locate the GenoFLU entry point on PATH (bioconda installs `genoflu.py`)."""
+    """Locate the GenoFLU entry point: the sibling genoflu_gui env first, then
+    PATH (bioconda installs `genoflu.py`; envs built before the split still
+    carry a copy of it)."""
+    if _GENOFLU_ENV is not None:
+        for cand in ("genoflu.py", "genoflu"):
+            p = _GENOFLU_ENV / "bin" / cand
+            if p.is_file():
+                return str(p)
     for cand in ("genoflu.py", "genoflu"):
         which = shutil.which(cand)
         if which:
@@ -272,6 +312,12 @@ def run(
     before = {p.name for p in outdir.glob("*_stats.*")}
 
     env = dict(os.environ)
+    # GenoFLU shells out to blastn/makeblastdb, and its own shebang resolves
+    # python from PATH — when it runs from the sibling env, all of that must
+    # resolve there too, so that env's bin goes first on PATH.
+    if genoflu_exe and _GENOFLU_ENV is not None and genoflu_exe.startswith(str(_GENOFLU_ENV)):
+        env["PATH"] = f"{_GENOFLU_ENV / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+        env["CONDA_PREFIX"] = str(_GENOFLU_ENV)
     env.setdefault("TMPDIR", "/tmp")
     started = _now()
     rc = 0
@@ -337,8 +383,10 @@ def run(
         "segments_matched": parsed.get("segments_matched"),
         "genotype_complete": parsed.get("complete"),
         "versions": {
-            "genoflu": _tool_version([genoflu_exe, "-v"]) if genoflu_exe else None,
-            "blastn": _tool_version(["blastn", "-version"]),
+            # Probed with the same environment the run used, so the recorded
+            # versions are the ones that actually produced the result.
+            "genoflu": _tool_version([genoflu_exe, "-v"], env=env) if genoflu_exe else None,
+            "blastn": _tool_version(["blastn", "-version"], env=env),
             "reference_db": _db_version(db),
         },
         "reportable_metrics_per_segment": [

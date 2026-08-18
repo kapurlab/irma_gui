@@ -9,8 +9,9 @@
 #   1. Locate/create the conda env (shared at <repo>/env, else personal irma_gui).
 #   2. pip install backend/requirements.txt into that env.
 #   3. Verify IRMA (and its bundled FLU/CoV reference modules).
-#   4. Verify GenoFLU + its bundled reference set; optionally stage it to the
-#      shared databases dir so it survives env rebuilds.
+#   4. Verify GenoFLU (from the sibling genoflu_gui env) + its reference set;
+#      optionally stage the set to the shared databases dir so it survives
+#      env rebuilds.
 #   5. Build the React frontend (frontend/dist/).
 #
 # Usage:
@@ -103,9 +104,9 @@ if [[ ${USE_PERSONAL} -eq 1 && ! -x "${ENV_BIN}/python" ]]; then
 fi
 PYTHON="${ENV_BIN}/python"
 [[ ${DRY_RUN} -eq 1 || -x "${PYTHON}" ]] || die "env python not found at '${PYTHON}' — ${ENV_DESC} did not build correctly."
-# Put the env's bin on PATH for every tool call below: IRMA, blastn/makeblastdb
-# (GenoFLU shells out to them), seqkit, samtools. The OOD session sets PATH the
-# same way.
+# Put the env's bin on PATH for every tool call below: IRMA, seqkit, samtools.
+# (GenoFLU and the blastn/makeblastdb it shells out to run from the sibling
+# genoflu_gui env — see section 3.) The OOD session sets PATH the same way.
 if [[ -d "${ENV_BIN}" ]]; then export PATH="${ENV_BIN}:${PATH}"; fi
 log "pip install backend requirements into ${ENV_DESC}"
 run "${PYTHON}" -m pip install -r "${REPO_DIR}/backend/requirements.txt"
@@ -124,9 +125,22 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Verify GenoFLU + reference set (optionally stage to shared databases)
 # ---------------------------------------------------------------------------
-GENOFLU="$(command -v genoflu.py || command -v genoflu || true)"
+# GenoFLU runs from genoflu_gui's own env at runtime (bin/run_genoflu.py,
+# _sibling_env_dir) — a copy in this env would tie the two solves together and
+# could drift from the suite's pinned version. Resolve it the way the runner
+# will: sibling env first, then PATH (envs built before the split).
+GENOFLU=""
+for _cand in "${BDTOOLS_SIBLING_ENV_GENOFLU_GUI:-}" \
+             "$(dirname "${REPO_DIR}")/genoflu_gui/env" \
+             "${BDTOOLS_HOME:-${XDG_DATA_HOME:-${HOME}/.local/share}/bdtools}/checkouts/genoflu_gui/env"; do
+  if [[ -n "${_cand}" && -x "${_cand}/bin/genoflu.py" ]]; then
+    GENOFLU="${_cand}/bin/genoflu.py"
+    break
+  fi
+done
+[[ -n "${GENOFLU}" ]] || GENOFLU="$(command -v genoflu.py || command -v genoflu || true)"
 if [[ -n "${GENOFLU}" ]]; then
-  ok "GenoFLU on PATH: ${GENOFLU}"
+  ok "GenoFLU: ${GENOFLU}"
   # Bundled reference set lives at <script>/../dependencies (fastas + key).
   GENOFLU_DEP="$(dirname "$(dirname "$(readlink -f "${GENOFLU}")")")/dependencies"
   if [[ -d "${GENOFLU_DEP}/fastas" && -f "${GENOFLU_DEP}/genotype_key.xlsx" ]]; then
@@ -143,7 +157,7 @@ if [[ -n "${GENOFLU}" ]]; then
     warn "GenoFLU bundled reference set not found at ${GENOFLU_DEP}; GenoFLU will be skipped."
   fi
 else
-  warn "GenoFLU not in env — genotyping will be skipped at runtime."
+  warn "GenoFLU not found (no sibling genoflu_gui env, not on PATH) — genotyping will be skipped at runtime."
 fi
 
 # seqkit / samtools sanity

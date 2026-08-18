@@ -6,8 +6,9 @@
 #
 # After the env exists, run deploy/install.sh to verify IRMA + GenoFLU and build
 # the frontend. IRMA ships its FLU/CoV reference modules inside the conda
-# package, and GenoFLU ships its reference set under <env>/dependencies/ — so
-# there is no separate database download for the core pipeline.
+# package, and GenoFLU (which runs from the sibling genoflu_gui env) ships its
+# reference set under that env's dependencies/ — so there is no separate
+# database download for the core pipeline.
 name: irma_gui
 channels:
   - conda-forge
@@ -28,8 +29,11 @@ dependencies:
 
   # Viral assembly + genotyping toolchain
   - irma>=1.0            # CDC IRMA — segmented RNA-virus assembly (FLU / CoV)
-  - genoflu>=1.03        # USDA-VS GenoFLU — H5 2.3.4.4b genotyping (bundled refs)
-  - blast                # blastn / makeblastdb (GenoFLU shells out to these)
+  # NOT genoflu (nor blast, which was only here for it): GenoFLU runs from
+  # genoflu_gui's own env, where its version is pinned once for the whole
+  # suite (see bin/run_genoflu.py, _sibling_env_dir). A second copy here ties
+  # this env's solve to genoflu's dependency tree — the same coupling that
+  # once capped amr_plus_gui's env — and the two copies can drift apart.
   - seqkit               # read + assembly QC stats (Q20/Q30, depth)
   - samtools
 
@@ -47,6 +51,6 @@ dependencies:
 # Notes:
 #  - IRMA bundles its FLU and CoV reference modules; no separate DB download.
 #  - GenoFLU's reference set (dependencies/fastas + genotype_key.xlsx) ships
-#    inside the conda package; run_genoflu.py resolves it relative to genoflu.py.
-#    To pin a newer genotype key, point config.py's genoflu_db at an out-of-tree
-#    dependencies/ dir.
+#    inside its conda package in the genoflu_gui env; run_genoflu.py resolves
+#    it relative to the genoflu.py it runs. To pin a newer genotype key, point
+#    config.py's genoflu_db at an out-of-tree dependencies/ dir.
