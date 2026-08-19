@@ -227,8 +227,20 @@ def _cov_gene(ref: str) -> str:
     return parts[1].upper() if len(parts) >= 2 and parts[1] else (parts[0].upper() if parts else "?")
 
 
-def _coverage_plot(ref: str, depths: List[float], outpath: Path) -> bool:
-    """Per-position coverage-depth plot for one segment (matplotlib)."""
+# Nucleotide colours, kept identical to the HTML report's NT_COLORS so the
+# interactive chart and its static print twin say the same thing.
+_NT_PLOT_COLORS = {"A": "#3AA655", "C": "#3B6FD4", "G": "#E8B93B",
+                   "T": "#D8453E", "-": "#8B96A0", "N": "#B9C0C6"}
+
+
+def _coverage_plot(ref: str, depths: List[float], outpath: Path,
+                   compositions=None) -> bool:
+    """Per-position coverage-depth plot for one segment (matplotlib).
+
+    When per-SNP allele compositions are supplied, a short strip under the
+    depth curve carries one stacked bar per SNP, coloured by the nucleotides
+    observed there in proportion — the print twin of the HTML chart's
+    composition track."""
     if not depths:
         return False
     try:
@@ -237,16 +249,47 @@ def _coverage_plot(ref: str, depths: List[float], outpath: Path) -> bool:
         import matplotlib.pyplot as plt
 
         x = list(range(1, len(depths) + 1))
-        fig, ax = plt.subplots(figsize=(6.8, 2.2))
+        if compositions:
+            # constrained layout: tight_layout cannot size a shared-x gridspec
+            # pair and warns that the result may be wrong.
+            fig, (ax, axc) = plt.subplots(
+                2, 1, figsize=(6.8, 2.8), sharex=True, layout="constrained",
+                gridspec_kw={"height_ratios": [3.1, 1.0]})
+        else:
+            fig, ax = plt.subplots(figsize=(6.8, 2.2))
+            axc = None
         ax.fill_between(x, depths, color="#4C8C8A", alpha=0.35, linewidth=0)
         ax.plot(x, depths, color="#2F6F6C", lw=0.7)
         ax.axhline(10, color="#C46A6A", lw=0.8, ls="--")
-        ax.set_xlabel("reference position (nt)  — dashed line = 10X")
         ax.set_ylabel("depth (X)")
         ax.margins(x=0)
         ax.spines[["top", "right"]].set_visible(False)
-        fig.tight_layout()
-        fig.savefig(outpath, dpi=150)
+        if axc is not None:
+            positions = [p for p, _ in compositions]
+            # Exactly the HTML chart's per-bar width rule, shared from there so
+            # the two renderings cannot drift apart.
+            from .html_report import bar_widths
+            widths = bar_widths(positions, len(depths) or 1)
+            for (pos, comp), w in zip(compositions, widths):
+                bottom = 0.0
+                for allele, frac, _cnt in comp:
+                    axc.bar(pos, frac, bottom=bottom, width=w,
+                            color=_NT_PLOT_COLORS.get(allele, "#8B96A0"), linewidth=0)
+                    bottom += frac
+            axc.set_ylim(0, 1)
+            axc.set_yticks([0, 1])
+            axc.set_yticklabels(["0", "100%"], fontsize=6)
+            axc.set_ylabel("allele", fontsize=7)
+            axc.margins(x=0)
+            axc.set_xlim(ax.get_xlim())
+            axc.spines[["top", "right"]].set_visible(False)
+            axc.set_xlabel("reference position (nt) — dashed line = 10X · bars = SNP allele mix"
+                           " (A green, C blue, G yellow, T red)", fontsize=6.5)
+        else:
+            ax.set_xlabel("reference position (nt)  — dashed line = 10X")
+        if axc is None:
+            fig.tight_layout()
+        fig.savefig(outpath, dpi=150, bbox_inches="tight")
         plt.close(fig)
         return True
     except Exception:
@@ -287,7 +330,16 @@ def _coverage_section(outdir: Path, assets: Path, ss) -> List[Any]:
     n = 0
     for order, gene, ref, depths in entries:
         fig = assets / f"cov_{ref}.png"
-        if not _coverage_plot(ref, depths, fig):
+        # Same SNP allele-composition strip the HTML chart carries, so the
+        # reportlab fallback PDF is not missing what the WeasyPrint one shows.
+        variants_for_plot = _read_variants(tables_dir / f"{ref}-variants.txt")
+        try:
+            from .html_report import _read_all_alleles, _variant_compositions
+            comps = _variant_compositions(
+                variants_for_plot, _read_all_alleles(tables_dir / f"{ref}-allAlleles.txt"))
+        except Exception:  # noqa: BLE001
+            comps = []
+        if not _coverage_plot(ref, depths, fig, compositions=comps):
             continue
         seg_txt = f"segment {order} " if order != 99 else ""
         story.append(Paragraph(f"IRMA coverage — {seg_txt}{gene} ({ref})", ss["Body"]))

@@ -47,6 +47,21 @@ WARN = "#D8B26E"
 
 _VERDICT_COLOR = {"PASS": SUCCESS, "REVIEW": WARN, "FAIL": DANGER}
 
+# Nucleotide colours — the conventional trace/browser scheme used across
+# sequencing tools (A green, C blue, G yellow, T red), so a mixed call reads
+# the same here as it does in any chromatogram or genome browser. Deletions
+# and anything else fall back to grey rather than borrowing a base's colour.
+NT_COLORS = {
+    "A": "#3AA655",   # green
+    "C": "#3B6FD4",   # blue
+    "G": "#E8B93B",   # yellow
+    "T": "#D8453E",   # red
+    "-": "#8B96A0",   # deletion
+    "N": "#B9C0C6",   # ambiguous
+}
+NT_ORDER = ["A", "C", "G", "T", "-", "N"]
+_NT_OTHER = "#8B96A0"
+
 # The QC floor the whole tool grades against (assembly_stats' pct_lt10x and the
 # PASS wording in the summary). The chart's threshold line must be the same
 # number the verdicts use, or the report argues with itself.
@@ -117,12 +132,134 @@ def _zero_runs(depths: List[float]) -> List[Tuple[int, int]]:
     return runs
 
 
+def _read_all_alleles(path: Path) -> Dict[int, List[Tuple[str, float, int]]]:
+    """Per-position allele composition from IRMA's <ref>-allAlleles.txt.
+
+    Returns {position: [(allele, frequency, count), ...]} sorted by descending
+    frequency. This is what turns "a SNP is here" into "and the reads at it are
+    96% C / 3% G" — the mixed call's actual make-up, which the variants table
+    alone cannot give (it names only the consensus and the top minority allele).
+    """
+    import csv
+    out: Dict[int, List[Tuple[str, float, int]]] = {}
+    try:
+        with path.open(newline="", encoding="utf-8", errors="replace") as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            keys = {(f or "").strip().lower(): f for f in (reader.fieldnames or [])}
+
+            def col(*names):
+                for n in names:
+                    if n in keys:
+                        return keys[n]
+                return None
+
+            pos_k, all_k = col("position"), col("allele")
+            frq_k, cnt_k = col("frequency"), col("count")
+            if not (pos_k and all_k):
+                return out
+            for row in reader:
+                try:
+                    pos = int((row.get(pos_k) or "").strip())
+                except (TypeError, ValueError):
+                    continue
+                allele = (row.get(all_k) or "").strip().upper()
+                if not allele:
+                    continue
+                try:
+                    freq = float(row.get(frq_k) or 0)
+                except (TypeError, ValueError):
+                    freq = 0.0
+                try:
+                    count = int(float(row.get(cnt_k) or 0))
+                except (TypeError, ValueError):
+                    count = 0
+                out.setdefault(pos, []).append((allele, freq, count))
+    except OSError:
+        return out
+    for pos in out:
+        out[pos].sort(key=lambda a: a[1], reverse=True)
+    return out
+
+
+def _variant_compositions(variants: List[Dict[str, str]],
+                          alleles: Dict[int, List[Tuple[str, float, int]]]):
+    """(position, [(allele, fraction, count), ...]) for each called SNP.
+
+    Falls back to the variants table's own consensus/minority pair when the
+    allAlleles table is missing, so the composition bar still appears (just at
+    two-allele resolution) rather than vanishing.
+    """
+    out: List[Tuple[int, List[Tuple[str, float, int]]]] = []
+    for v in variants:
+        try:
+            pos = int(v["position"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        comp = alleles.get(pos)
+        if not comp:
+            try:
+                minor = float(str(v.get("freq", "")).rstrip("%")) / 100.0
+            except (TypeError, ValueError):
+                minor = 0.0
+            cons, mino = (v.get("consensus") or "").upper(), (v.get("minority") or "").upper()
+            comp = [(cons, max(0.0, 1.0 - minor), 0), (mino, minor, 0)]
+            comp = [c for c in comp if c[0]]
+        total = sum(f for _, f, _ in comp) or 1.0
+        out.append((pos, [(a, f / total, c) for a, f, c in comp if f > 0]))
+    return out
+
+
+def bar_widths(positions: List[int], total_len: int) -> List[float]:
+    """Composition-bar width in x (data) units — one width PER bar.
+
+    Wide enough that a lone SNP on a 2 kb segment is a visible block, and never
+    wider than the gap to its own nearest neighbour, so a cluster of variants
+    renders as distinct adjacent bars instead of one smeared band. Sizing each
+    bar independently matters: with a single shared width, one tight pair
+    (say positions 189 and 192) would shrink every other bar in the segment to
+    a hairline.
+    """
+    if not positions:
+        return []
+    nominal = max(total_len / 110.0, 1.0)
+    # A floor only so a bar never collapses to nothing; it must never win over
+    # the neighbour gap, or a variant-dense stretch draws bars on top of each
+    # other. Sub-pixel bars are the honest rendering of 400 SNPs in 2 kb — the
+    # strip reads as a dense band, and zooming separates them again.
+    floor = max(total_len / 3000.0, 0.05)
+    ordered = sorted(positions)
+    nearest = {}
+    for i, p in enumerate(ordered):
+        gaps = []
+        if i > 0:
+            gaps.append(p - ordered[i - 1])
+        if i < len(ordered) - 1:
+            gaps.append(ordered[i + 1] - p)
+        gaps = [g for g in gaps if g > 0]
+        nearest[p] = min(gaps) if gaps else None
+    out = []
+    for p in positions:
+        g = nearest.get(p)
+        w = nominal if g is None else min(nominal, max(g * 0.9, floor))
+        out.append(max(min(w, g * 0.9) if g else w, floor))
+    return out
+
+
 def _coverage_fig(sample: str, order: int, gene: str, ref: str,
                   depths: List[float], variants: List[Dict[str, str]],
-                  expected_len: Optional[int]):
-    """One segment's interactive Coverage & Variants figure (or None)."""
+                  expected_len: Optional[int],
+                  compositions=None):
+    """One segment's interactive Coverage & Variants figure (or None).
+
+    Two stacked panels sharing one x axis: the depth curve with a diamond at
+    every called SNP, and — directly beneath each diamond — a stacked bar
+    coloured by the nucleotides actually observed there, in proportion. A
+    50/50 G/A call reads as a half-yellow, half-green bar. Sharing the x axis
+    means zooming the coverage curve zooms the bars with it.
+    """
     try:
         import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
     except Exception:  # noqa: BLE001
         return None
 
@@ -139,25 +276,38 @@ def _coverage_fig(sample: str, order: int, gene: str, ref: str,
     pct_cov = covered / total_len * 100
     mean = sum(depths) / total_len
 
-    fig = go.Figure()
+    compositions = compositions or []
+    has_comp = bool(compositions)
+
+    if has_comp:
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                            row_heights=[0.76, 0.24], vertical_spacing=0.045)
+        main_row = dict(row=1, col=1)
+    else:
+        fig = go.Figure()
+        main_row = {}
+
     fig.add_trace(go.Scatter(
         x=list(range(1, total_len + 1)), y=depths, mode="lines",
         line=dict(color=TEAL_DARK, width=1),
         fill="tozeroy", fillcolor="rgba(76,140,138,0.30)",
-        name="depth", hovertemplate="pos %{x}: %{y:.0f}×<extra></extra>",
-    ))
+        name="depth", showlegend=False,
+        hovertemplate="pos %{x}: %{y:.0f}×<extra></extra>",
+    ), **main_row)
     for a, b in _zero_runs(depths):
         # Label only runs wide enough to carry text; every run gets the shading.
         if (b - a) > total_len * 0.02:
             fig.add_vrect(x0=a, x1=b, fillcolor="rgba(196,106,106,0.20)", line_width=0,
                           annotation_text="no coverage", annotation_position="top left",
-                          annotation_font_size=10, annotation_font_color=DANGER)
+                          annotation_font_size=10, annotation_font_color=DANGER,
+                          **main_row)
         else:
-            fig.add_vrect(x0=a, x1=b, fillcolor="rgba(196,106,106,0.20)", line_width=0)
+            fig.add_vrect(x0=a, x1=b, fillcolor="rgba(196,106,106,0.20)", line_width=0,
+                          **main_row)
     fig.add_hline(y=QC_DEPTH_FLOOR, line_dash="dash", line_color=DANGER,
                   annotation_text=f"{QC_DEPTH_FLOOR}×",
                   annotation_position="top left",
-                  annotation_font_color=DANGER)
+                  annotation_font_color=DANGER, **main_row)
     if variants:
         vx: List[int] = []
         vy: List[float] = []
@@ -173,11 +323,49 @@ def _coverage_fig(sample: str, order: int, gene: str, ref: str,
                          f"{v.get('freq') or ''} ({v.get('count') or '?'} reads)")
         if vx:
             fig.add_trace(go.Scatter(
-                x=vx, y=vy, mode="markers", name="minority SNPs",
+                x=vx, y=vy, mode="markers", name="minority SNPs", showlegend=False,
                 marker=dict(color=DANGER, size=9, symbol="diamond",
                             line=dict(color="#7E3B3B", width=1)),
                 text=vtext, hovertemplate="pos %{x}: %{text}<extra>SNP</extra>",
-            ))
+            ), **main_row)
+
+    if has_comp:
+        positions = [p for p, _ in compositions]
+        widths = bar_widths(positions, total_len)
+        # One trace per nucleotide, stacked to 1.0 — so each bar's colour split
+        # IS the allele ratio at that position. Only bases actually seen get a
+        # trace, keeping the legend honest.
+        seen = []
+        for _, comp in compositions:
+            for allele, _f, _c in comp:
+                key = allele if allele in NT_COLORS else "other"
+                if key not in seen:
+                    seen.append(key)
+        for key in [k for k in NT_ORDER if k in seen] + (["other"] if "other" in seen else []):
+            ys, texts = [], []
+            for _p, comp in compositions:
+                frac, cnt = 0.0, 0
+                for allele, f, c in comp:
+                    if (allele if allele in NT_COLORS else "other") == key:
+                        frac += f
+                        cnt += c
+                ys.append(frac)
+                texts.append(f"{key}: {frac * 100:.1f}%" + (f" ({cnt:,} reads)" if cnt else ""))
+            label = {"-": "deletion", "N": "ambiguous", "other": "other"}.get(key, key)
+            fig.add_trace(go.Bar(
+                x=positions, y=ys, width=widths, name=label,
+                marker=dict(color=NT_COLORS.get(key, _NT_OTHER), line=dict(width=0)),
+                text=texts, hovertemplate="pos %{x} — %{text}<extra></extra>",
+            ), row=2, col=1)
+        fig.update_layout(barmode="stack", bargap=0)
+        fig.update_yaxes(title_text="allele", range=[0, 1], tickformat=".0%",
+                         tickvals=[0, 0.5, 1], row=2, col=1)
+        fig.update_xaxes(title_text="Position (bp)", row=2, col=1)
+        fig.update_yaxes(title_text="Coverage depth", row=1, col=1)
+    else:
+        fig.update_xaxes(title_text="Position (bp)")
+        fig.update_yaxes(title_text="Coverage depth")
+
     seg_txt = f"segment {order} · " if order != 99 else ""
     fig.update_layout(
         title=dict(text=(f"{sample} — {seg_txt}{gene} ({ref}) — "
@@ -186,11 +374,12 @@ def _coverage_fig(sample: str, order: int, gene: str, ref: str,
                          f"{pct_cov:.1f}% covered</sup>"),
                    font=dict(size=15, color=INK)),
         template="plotly_white",
-        height=340,
+        height=430 if has_comp else 340,
         margin=dict(l=64, r=24, t=76, b=48),
-        xaxis_title="Position (bp)",
-        yaxis_title="Coverage depth",
-        showlegend=False,
+        showlegend=has_comp,
+        legend=dict(orientation="h", yanchor="top", y=-0.16, x=0,
+                    font=dict(size=11), title=dict(text="SNP alleles  ", side="left")),
+        bargap=0,
     )
     return fig
 
@@ -215,11 +404,13 @@ def _collect_segments(outdir: Path, asm: Dict[str, Any]):
             ref = tbl.name.replace("-coverage.txt", "")
         gene = _cov_gene(ref)
         variants = _read_variants(tables_dir / f"{ref}-variants.txt")
+        alleles = _read_all_alleles(tables_dir / f"{ref}-allAlleles.txt")
+        comps = _variant_compositions(variants, alleles)
         try:
             exp_len = int(expected.get(gene) or 0) or None
         except (TypeError, ValueError):
             exp_len = None
-        entries.append((seg_num.get(gene, 99), gene, ref, depths, variants, exp_len))
+        entries.append((seg_num.get(gene, 99), gene, ref, depths, variants, exp_len, comps))
     entries.sort(key=lambda e: (e[0], e[2]))
     return entries
 
@@ -410,13 +601,15 @@ def write_html(ctx: Dict[str, Any], path: Path, outdir: Path) -> None:
                      'padded to the segment\'s expected length so missing stretches show as zero. '
                      'Red diamonds are the minority-variant SNPs IRMA called for that segment (hover for '
                      'the alleles, frequency and read count); shaded red spans have <b>no coverage</b>; the '
-                     f'dashed line is the {QC_DEPTH_FLOOR}X QC floor. Drag to zoom into any region '
-                     '(double-click resets); the toolbar saves a PNG snapshot.</p>')
+                     f'dashed line is the {QC_DEPTH_FLOOR}X QC floor. Directly below each diamond, a '
+                     'stacked bar shows what the reads at that position actually were, coloured by '
+                     'nucleotide (<b style=\"color:#3AA655\">A</b> green, <b style=\"color:#3B6FD4\">C</b> blue, <b style=\"color:#E8B93B\">G</b> yellow, <b style=\"color:#D8453E\">T</b> red, deletions grey) in proportion — so a 50/50 G/A call is a half-yellow, half-green bar. '
+                     'Drag to zoom into any region (double-click resets); the toolbar saves a PNG snapshot.</p>')
         plotly_included = False
-        for order, gene, ref, depths, variants, exp_len in entries:
-            fig = _coverage_fig(sample, order, gene, ref, depths, variants, exp_len)
+        for order, gene, ref, depths, variants, exp_len, comps in entries:
+            fig = _coverage_fig(sample, order, gene, ref, depths, variants, exp_len, comps)
             png = assets / f"cov_{ref}.png"
-            png_ok = _coverage_plot(ref, depths, png)
+            png_ok = _coverage_plot(ref, depths, png, compositions=comps)
             if fig is not None:
                 fig_html = fig.to_html(
                     full_html=False,
