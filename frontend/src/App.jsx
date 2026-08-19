@@ -11,7 +11,7 @@ import { useResults } from "./useResults";
 // Fallback ONLY: the header shows the backend-reported version (git
 // describe — the same string the Diagnostic Tools Dashboard shows) and
 // uses this constant just until that arrives / on installs without git.
-const APP_VERSION = "0.3.3";
+const APP_VERSION = "0.3.6";
 
 const IRMA_MODULES = ["FLU", "CoV"];
 const HEADER_STYLES = ["ncbi", "strain"];
@@ -1735,7 +1735,7 @@ export default function App() {
                     <div className="results-list" style={{ marginBottom: 12 }}>
                       {resFiles.files.map((f) => {
                         const base = `./api/projects/${encodeURIComponent(selectedResultKey.split("::")[0])}/file?path=${encodeURIComponent(f.path)}`;
-                        const isPrimary = ["report_pdf", "submission_fasta", "stats_xlsx"].includes(f.category);
+                        const isPrimary = ["report_html", "report_pdf", "submission_fasta", "stats_xlsx"].includes(f.category);
                         return (
                           <div key={f.name} className="results-item" style={isPrimary ? { border: "1px solid var(--accent)", background: "rgba(76,140,138,0.05)" } : {}}>
                             <span className="result-icon">{fileIcon(f.name)}</span>

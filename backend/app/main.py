@@ -660,7 +660,7 @@ def api_project_runs(name: str):
                 "segment_count": asm.get("segment_count") or 0,
                 "verdict": (asm.get("overall_verdict") or "").upper(),
                 "genotype": geno.get("genotype") or "",
-                "has_report": (run_dir / "report.pdf").is_file(),
+                "has_report": (run_dir / "report.html").is_file() or (run_dir / "report.pdf").is_file(),
             })
     return JSONResponse({"project": name, "runs": rows})
 
@@ -921,6 +921,8 @@ def _result_category(rel: str) -> Optional[str]:
         return None
     if name.endswith(".fastq.gz"):
         return None
+    if name == "report.html":
+        return "report_html"
     if name == "report.pdf":
         return "report_pdf"
     if name.endswith("_stats.xlsx"):
@@ -951,10 +953,10 @@ def _result_category(rel: str) -> Optional[str]:
 
 
 _CATEGORY_ORDER = {
-    "report_pdf": 0, "stats_xlsx": 1, "submission_fasta": 2, "assembly_fasta": 3,
-    "genoflu_table_xlsx": 4, "genoflu_table_tsv": 5, "genoflu_json": 6,
-    "assembly_stats": 7, "fastq_qc": 8, "ha_cleavage": 9, "coverage_figure": 10,
-    "run_manifest": 11, "log": 99,
+    "report_html": 0, "report_pdf": 1, "stats_xlsx": 2, "submission_fasta": 3,
+    "assembly_fasta": 4, "genoflu_table_xlsx": 5, "genoflu_table_tsv": 6,
+    "genoflu_json": 7, "assembly_stats": 8, "fastq_qc": 9, "ha_cleavage": 10,
+    "coverage_figure": 11, "run_manifest": 12, "log": 99,
 }
 
 
@@ -980,6 +982,7 @@ def _result_label(rel: str, category: Optional[str]) -> str:
     if category == "coverage_figure":
         return _coverage_figure_label(Path(rel).name)
     return {
+        "report_html": "Report (interactive HTML — coverage & SNP charts)",
         "report_pdf": "Report (PDF)",
         "stats_xlsx": "IRMA assembly & QC statistics (Excel workbook)",
         "submission_fasta": "Submission FASTA (metadata headers)",

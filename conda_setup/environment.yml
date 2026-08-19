@@ -24,7 +24,9 @@ dependencies:
   - openpyxl
   - biopython            # HA translation / cleavage motif
   - matplotlib-base      # report figures
-  - reportlab            # PDF report (pure-Python; no headless browser)
+  - reportlab            # PDF report fallback (pure-Python; no headless browser)
+  - weasyprint           # HTML→PDF (primary; reportlab used when absent)
+  - plotly <6            # interactive Coverage & Variants charts in report.html
   - pillow               # image sizing in the PDF
 
   # Viral assembly + genotyping toolchain

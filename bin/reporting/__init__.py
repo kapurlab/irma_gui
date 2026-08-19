@@ -9,14 +9,21 @@ Produces two deliverables from a completed per-sample run directory:
       same way. Input-file QC, per-segment coverage, subtype, GenoFLU genotype
       and provenance in one flat, labeled list.
 
-  report.pdf
-      A human-readable PDF: input file quality, an analysis summary, the
-      per-segment assembly/coverage table (with a depth figure), the GenoFLU
-      genotype, the submission strain name, and a methods/provenance page.
+  report.html
+      A self-contained interactive report: every PDF section plus one zoomable
+      Plotly "Coverage & Variants" chart per assembled segment — per-position
+      depth with IRMA's minority-variant SNPs marked, zero-coverage stretches
+      shaded, and the 10X QC floor drawn in.
 
-Both are best-effort: a missing artifact or optional dependency (reportlab /
-matplotlib) degrades gracefully and is reported in the log, never failing the
-pipeline.
+  report.pdf
+      The same document rendered to PDF by WeasyPrint (interactive charts
+      swap to their static twins under print media). When WeasyPrint is not
+      installed the PDF falls back to the original reportlab layout, so a
+      PDF is produced either way.
+
+All are best-effort: a missing artifact or optional dependency (plotly /
+weasyprint / reportlab / matplotlib) degrades gracefully and is reported in
+the log, never failing the pipeline.
 """
 
 from __future__ import annotations
@@ -151,7 +158,7 @@ def _strain(rec: Dict[str, str], subtype: Optional[str]) -> str:
 # ---------------------------------------------------------------------------
 def build(outdir: Path, sample: str, log=print) -> Dict[str, Optional[str]]:
     outdir = Path(outdir)
-    result: Dict[str, Optional[str]] = {"stats_xlsx": None, "report_pdf": None}
+    result: Dict[str, Optional[str]] = {"stats_xlsx": None, "report_html": None, "report_pdf": None}
 
     fastq_qc = _load_json(outdir / "fastq_qc.json")
     asm = _load_json(outdir / "assembly_stats.json")
@@ -171,19 +178,46 @@ def build(outdir: Path, sample: str, log=print) -> Dict[str, Optional[str]]:
     except Exception as exc:  # noqa: BLE001
         log(f"  WARNING: stats workbook not written: {exc}")
 
+    ctx = {
+        "sample": sample, "date": date_stamp,
+        "fastq_qc": fastq_qc, "asm": asm, "cleavage": cleavage,
+        "genoflu": genoflu, "manifest": manifest, "stats_items": items,
+    }
+
+    # HTML first — it is the primary document now, with the interactive
+    # per-segment Coverage & Variants charts.
+    html_path = outdir / "report.html"
     try:
-        from .pdf_report import write_pdf
-        pdf_path = outdir / "report.pdf"
-        ctx = {
-            "sample": sample, "date": date_stamp,
-            "fastq_qc": fastq_qc, "asm": asm, "cleavage": cleavage,
-            "genoflu": genoflu, "manifest": manifest, "stats_items": items,
-        }
-        write_pdf(ctx, pdf_path, outdir)
-        result["report_pdf"] = str(pdf_path)
-        log(f"  wrote {pdf_path.name}")
+        from .html_report import write_html
+        write_html(ctx, html_path, outdir)
+        result["report_html"] = str(html_path)
+        log(f"  wrote {html_path.name}")
     except Exception as exc:  # noqa: BLE001
-        log(f"  WARNING: PDF report not written ({exc}). Is reportlab installed?")
+        log(f"  WARNING: HTML report not written ({exc}).")
+
+    # PDF: render the SAME HTML via WeasyPrint so both documents match; keep
+    # the original reportlab layout as the fallback when WeasyPrint (or the
+    # HTML itself) is unavailable, so a PDF is produced either way.
+    pdf_path = outdir / "report.pdf"
+    pdf_via_weasyprint = False
+    if result["report_html"]:
+        try:
+            from .html_report import html_to_pdf
+            pdf_via_weasyprint = html_to_pdf(html_path, pdf_path)
+        except Exception:  # noqa: BLE001
+            pdf_via_weasyprint = False
+    if pdf_via_weasyprint:
+        result["report_pdf"] = str(pdf_path)
+        log(f"  wrote {pdf_path.name} (WeasyPrint, from report.html)")
+    else:
+        try:
+            from .pdf_report import write_pdf
+            write_pdf(ctx, pdf_path, outdir)
+            result["report_pdf"] = str(pdf_path)
+            log(f"  wrote {pdf_path.name} (reportlab fallback"
+                " — install weasyprint for the HTML-matched PDF)")
+        except Exception as exc:  # noqa: BLE001
+            log(f"  WARNING: PDF report not written ({exc}). Is reportlab installed?")
 
     return result
 
