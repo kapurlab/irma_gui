@@ -156,7 +156,8 @@ def _strain(rec: Dict[str, str], subtype: Optional[str]) -> str:
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
-def build(outdir: Path, sample: str, log=print) -> Dict[str, Optional[str]]:
+def build(outdir: Path, sample: str, log=print,
+          write_xlsx: bool = True) -> Dict[str, Optional[str]]:
     outdir = Path(outdir)
     result: Dict[str, Optional[str]] = {"stats_xlsx": None, "report_html": None, "report_pdf": None}
 
@@ -169,14 +170,22 @@ def build(outdir: Path, sample: str, log=print) -> Dict[str, Optional[str]]:
     date_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     items = build_stats_items(sample, date_stamp, fastq_qc, asm, cleavage, genoflu, manifest)
 
-    try:
-        from .stats_excel import write_stats_xlsx
-        xlsx_path = outdir / f"{sample}_{date_stamp}_stats.xlsx"
-        write_stats_xlsx(items, xlsx_path, sample)
-        result["stats_xlsx"] = str(xlsx_path)
-        log(f"  wrote {xlsx_path.name}")
-    except Exception as exc:  # noqa: BLE001
-        log(f"  WARNING: stats workbook not written: {exc}")
+    # The workbook's name carries a timestamp, so re-rendering a finished run's
+    # REPORT would otherwise drop a duplicate workbook beside the original every
+    # time. write_xlsx=False is for exactly that case.
+    if write_xlsx:
+        try:
+            from .stats_excel import write_stats_xlsx
+            xlsx_path = outdir / f"{sample}_{date_stamp}_stats.xlsx"
+            write_stats_xlsx(items, xlsx_path, sample)
+            result["stats_xlsx"] = str(xlsx_path)
+            log(f"  wrote {xlsx_path.name}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"  WARNING: stats workbook not written: {exc}")
+    else:
+        existing = sorted(outdir.glob(f"{sample}_*_stats.xlsx"))
+        if existing:
+            result["stats_xlsx"] = str(existing[-1])
 
     ctx = {
         "sample": sample, "date": date_stamp,
