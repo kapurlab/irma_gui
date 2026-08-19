@@ -237,10 +237,10 @@ def _coverage_plot(ref: str, depths: List[float], outpath: Path,
                    compositions=None) -> bool:
     """Per-position coverage-depth plot for one segment (matplotlib).
 
-    When per-SNP allele compositions are supplied, a short strip under the
-    depth curve carries one stacked bar per SNP, coloured by the nucleotides
-    observed there in proportion — the print twin of the HTML chart's
-    composition track."""
+    When per-SNP allele compositions are supplied, each SNP gets a thin stem
+    drawn ON the depth curve, from zero up to the depth at that position and
+    split by the nucleotides observed there — the print twin of the HTML
+    chart's allele stems."""
     if not depths:
         return False
     try:
@@ -249,46 +249,37 @@ def _coverage_plot(ref: str, depths: List[float], outpath: Path,
         import matplotlib.pyplot as plt
 
         x = list(range(1, len(depths) + 1))
-        if compositions:
-            # constrained layout: tight_layout cannot size a shared-x gridspec
-            # pair and warns that the result may be wrong.
-            fig, (ax, axc) = plt.subplots(
-                2, 1, figsize=(6.8, 2.8), sharex=True, layout="constrained",
-                gridspec_kw={"height_ratios": [3.1, 1.0]})
-        else:
-            fig, ax = plt.subplots(figsize=(6.8, 2.2))
-            axc = None
+        fig, ax = plt.subplots(figsize=(6.8, 2.2))
         ax.fill_between(x, depths, color="#4C8C8A", alpha=0.35, linewidth=0)
         ax.plot(x, depths, color="#2F6F6C", lw=0.7)
         ax.axhline(10, color="#C46A6A", lw=0.8, ls="--")
+        if compositions:
+            seen = []
+            for pos, comp in compositions:
+                depth = depths[pos - 1] if 0 < pos <= len(depths) else 0
+                if depth <= 0:
+                    continue
+                bottom = 0.0
+                for allele, frac, _count in comp:
+                    top = bottom + frac * depth
+                    ax.plot([pos, pos], [bottom, top],
+                            color=_NT_PLOT_COLORS.get(allele, "#8B96A0"),
+                            lw=1.1, solid_capstyle="butt", zorder=3)
+                    bottom = top
+                    if allele not in seen:
+                        seen.append(allele)
+        # The colour key goes in the axis label rather than a legend box: at
+        # this figure size a legend lands on top of the coverage curve it is
+        # meant to explain.
+        if compositions:
+            ax.set_xlabel("reference position (nt) — dashed line = 10X · SNP stems:"
+                          " A green, C blue, G yellow, T red", fontsize=7)
+        else:
+            ax.set_xlabel("reference position (nt)  — dashed line = 10X")
         ax.set_ylabel("depth (X)")
         ax.margins(x=0)
         ax.spines[["top", "right"]].set_visible(False)
-        if axc is not None:
-            positions = [p for p, _ in compositions]
-            # Exactly the HTML chart's per-bar width rule, shared from there so
-            # the two renderings cannot drift apart.
-            from .html_report import bar_widths
-            widths = bar_widths(positions, len(depths) or 1)
-            for (pos, comp), w in zip(compositions, widths):
-                bottom = 0.0
-                for allele, frac, _cnt in comp:
-                    axc.bar(pos, frac, bottom=bottom, width=w,
-                            color=_NT_PLOT_COLORS.get(allele, "#8B96A0"), linewidth=0)
-                    bottom += frac
-            axc.set_ylim(0, 1)
-            axc.set_yticks([0, 1])
-            axc.set_yticklabels(["0", "100%"], fontsize=6)
-            axc.set_ylabel("allele", fontsize=7)
-            axc.margins(x=0)
-            axc.set_xlim(ax.get_xlim())
-            axc.spines[["top", "right"]].set_visible(False)
-            axc.set_xlabel("reference position (nt) — dashed line = 10X · bars = SNP allele mix"
-                           " (A green, C blue, G yellow, T red)", fontsize=6.5)
-        else:
-            ax.set_xlabel("reference position (nt)  — dashed line = 10X")
-        if axc is None:
-            fig.tight_layout()
+        fig.tight_layout()
         fig.savefig(outpath, dpi=150, bbox_inches="tight")
         plt.close(fig)
         return True

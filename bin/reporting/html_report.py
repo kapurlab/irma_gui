@@ -209,46 +209,50 @@ def _variant_compositions(variants: List[Dict[str, str]],
     return out
 
 
-def bar_widths(positions: List[int], total_len: int) -> List[float]:
-    """Composition-bar width in x (data) units — one width PER bar.
+def allele_stem_traces(go, compositions, depths, line_width: float = 3.0):
+    """Stacked allele "stems" drawn ON the coverage curve, one trace per base.
 
-    Wide enough that a lone SNP on a 2 kb segment is a visible block, and never
-    wider than the gap to its own nearest neighbour, so a cluster of variants
-    renders as distinct adjacent bars instead of one smeared band. Sizing each
-    bar independently matters: with a single shared width, one tight pair
-    (say positions 189 and 192) would shrink every other bar in the segment to
-    a hairline.
+    Each SNP gets a vertical line at its position running from 0 up to the read
+    depth there — the same height the diamond sits at — split into coloured
+    lengths by the nucleotides observed. A 50/50 G/A call is a stem that is
+    half yellow, half green.
+
+    Drawn as Scatter rather than Bar for two reasons: scatter shares the layer
+    the coverage curve is in, so the stems sit ON TOP of the area fill instead
+    of behind it; and its width is in PIXELS, so a stem stays the same
+    hairline whether the segment is 1 kb or 4 Mb, and zooming does not fatten
+    it. One trace per base keeps the legend to four entries no matter how many
+    SNPs there are.
     """
-    if not positions:
-        return []
-    nominal = max(total_len / 110.0, 1.0)
-    # A floor only so a bar never collapses to nothing; it must never win over
-    # the neighbour gap, or a variant-dense stretch draws bars on top of each
-    # other. Sub-pixel bars are the honest rendering of 400 SNPs in 2 kb — the
-    # strip reads as a dense band, and zooming separates them again.
-    floor = max(total_len / 3000.0, 0.05)
-    ordered = sorted(positions)
-    nearest = {}
-    for i, p in enumerate(ordered):
-        gaps = []
-        if i > 0:
-            gaps.append(p - ordered[i - 1])
-        if i < len(ordered) - 1:
-            gaps.append(ordered[i + 1] - p)
-        gaps = [g for g in gaps if g > 0]
-        nearest[p] = min(gaps) if gaps else None
-    out = []
-    for p in positions:
-        g = nearest.get(p)
-        if g is None:
-            out.append(max(nominal, floor))
+    by_base: Dict[str, Dict[str, List]] = {}
+    for pos, comp in compositions:
+        depth = depths[pos - 1] if 0 < pos <= len(depths) else 0
+        if depth <= 0:
             continue
-        # The gap is a HARD ceiling: the floor may raise a bar toward it, never
-        # past it. (Reversing that is invisible on a 2 kb segment, where the
-        # floor is sub-base, and guarantees overlap on a 4 Mb genome, where it
-        # is ~1.5 kb.)
-        out.append(min(g * 0.9, max(nominal, floor)))
-    return out
+        bottom = 0.0
+        for allele, frac, count in comp:
+            top = bottom + frac * depth
+            key = allele if allele in NT_COLORS else "other"
+            entry = by_base.setdefault(key, {"x": [], "y": [], "text": []})
+            # None breaks the polyline so segments stay separate strokes.
+            entry["x"] += [pos, pos, None]
+            entry["y"] += [bottom, top, None]
+            label = f"{allele}: {frac * 100:.1f}%" + (f" ({count:,} reads)" if count else "")
+            entry["text"] += [label, label, None]
+            bottom = top
+    traces = []
+    ordered = [k for k in NT_ORDER if k in by_base] + \
+              [k for k in by_base if k not in NT_ORDER]
+    for key in ordered:
+        e = by_base[key]
+        label = {"-": "deletion", "N": "ambiguous"}.get(key, key)
+        traces.append(go.Scatter(
+            x=e["x"], y=e["y"], mode="lines", name=label,
+            line=dict(color=NT_COLORS.get(key, _NT_OTHER), width=line_width),
+            text=e["text"], hovertemplate="pos %{x} — %{text}<extra></extra>",
+            connectgaps=False, showlegend=True,
+        ))
+    return traces
 
 
 def _coverage_fig(sample: str, order: int, gene: str, ref: str,
@@ -257,15 +261,14 @@ def _coverage_fig(sample: str, order: int, gene: str, ref: str,
                   compositions=None):
     """One segment's interactive Coverage & Variants figure (or None).
 
-    Two stacked panels sharing one x axis: the depth curve with a diamond at
-    every called SNP, and — directly beneath each diamond — a stacked bar
-    coloured by the nucleotides actually observed there, in proportion. A
-    50/50 G/A call reads as a half-yellow, half-green bar. Sharing the x axis
-    means zooming the coverage curve zooms the bars with it.
+    One panel: the depth curve, a diamond at every called SNP, and under each
+    diamond a stem running down to zero, coloured by the nucleotides actually
+    observed there in proportion — a 50/50 G/A call is half yellow, half
+    green. The stem's full height is the read depth at that position, so it
+    reaches exactly the diamond it belongs to.
     """
     try:
         import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
     except Exception:  # noqa: BLE001
         return None
 
@@ -283,37 +286,33 @@ def _coverage_fig(sample: str, order: int, gene: str, ref: str,
     mean = sum(depths) / total_len
 
     compositions = compositions or []
-    has_comp = bool(compositions)
+    comp_by_pos = {p: c for p, c in compositions}
 
-    if has_comp:
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                            row_heights=[0.76, 0.24], vertical_spacing=0.045)
-        main_row = dict(row=1, col=1)
-    else:
-        fig = go.Figure()
-        main_row = {}
-
+    fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=list(range(1, total_len + 1)), y=depths, mode="lines",
         line=dict(color=TEAL_DARK, width=1),
         fill="tozeroy", fillcolor="rgba(76,140,138,0.30)",
         name="depth", showlegend=False,
         hovertemplate="pos %{x}: %{y:.0f}×<extra></extra>",
-    ), **main_row)
+    ))
     for a, b in _zero_runs(depths):
         # Label only runs wide enough to carry text; every run gets the shading.
         if (b - a) > total_len * 0.02:
             fig.add_vrect(x0=a, x1=b, fillcolor="rgba(196,106,106,0.20)", line_width=0,
                           annotation_text="no coverage", annotation_position="top left",
-                          annotation_font_size=10, annotation_font_color=DANGER,
-                          **main_row)
+                          annotation_font_size=10, annotation_font_color=DANGER)
         else:
-            fig.add_vrect(x0=a, x1=b, fillcolor="rgba(196,106,106,0.20)", line_width=0,
-                          **main_row)
+            fig.add_vrect(x0=a, x1=b, fillcolor="rgba(196,106,106,0.20)", line_width=0)
     fig.add_hline(y=QC_DEPTH_FLOOR, line_dash="dash", line_color=DANGER,
                   annotation_text=f"{QC_DEPTH_FLOOR}×",
                   annotation_position="top left",
-                  annotation_font_color=DANGER, **main_row)
+                  annotation_font_color=DANGER)
+
+    # Allele stems go on before the diamonds so the markers stay on top.
+    for tr in allele_stem_traces(go, compositions, depths):
+        fig.add_trace(tr)
+
     if variants:
         vx: List[int] = []
         vy: List[float] = []
@@ -325,52 +324,22 @@ def _coverage_fig(sample: str, order: int, gene: str, ref: str,
                 continue
             vx.append(p)
             vy.append(depths[p - 1] if 0 < p <= len(depths) else 0)
+            # Hover carries the FULL composition, so the exact numbers behind
+            # the stem's colour split are one hover away.
+            comp = comp_by_pos.get(p)
+            if comp:
+                mix = ", ".join(f"{b} {f * 100:.1f}%" for b, f, _c in comp)
+            else:
+                mix = f"{v.get('consensus') or '?'}→{v.get('minority') or '?'} {v.get('freq') or ''}"
             vtext.append(f"{v.get('consensus') or '?'}→{v.get('minority') or '?'} "
-                         f"{v.get('freq') or ''} ({v.get('count') or '?'} reads)")
+                         f"({v.get('count') or '?'} reads) · {mix}")
         if vx:
             fig.add_trace(go.Scatter(
                 x=vx, y=vy, mode="markers", name="minority SNPs", showlegend=False,
                 marker=dict(color=DANGER, size=9, symbol="diamond",
                             line=dict(color="#7E3B3B", width=1)),
                 text=vtext, hovertemplate="pos %{x}: %{text}<extra>SNP</extra>",
-            ), **main_row)
-
-    if has_comp:
-        positions = [p for p, _ in compositions]
-        widths = bar_widths(positions, total_len)
-        # One trace per nucleotide, stacked to 1.0 — so each bar's colour split
-        # IS the allele ratio at that position. Only bases actually seen get a
-        # trace, keeping the legend honest.
-        seen = []
-        for _, comp in compositions:
-            for allele, _f, _c in comp:
-                key = allele if allele in NT_COLORS else "other"
-                if key not in seen:
-                    seen.append(key)
-        for key in [k for k in NT_ORDER if k in seen] + (["other"] if "other" in seen else []):
-            ys, texts = [], []
-            for _p, comp in compositions:
-                frac, cnt = 0.0, 0
-                for allele, f, c in comp:
-                    if (allele if allele in NT_COLORS else "other") == key:
-                        frac += f
-                        cnt += c
-                ys.append(frac)
-                texts.append(f"{key}: {frac * 100:.1f}%" + (f" ({cnt:,} reads)" if cnt else ""))
-            label = {"-": "deletion", "N": "ambiguous", "other": "other"}.get(key, key)
-            fig.add_trace(go.Bar(
-                x=positions, y=ys, width=widths, name=label,
-                marker=dict(color=NT_COLORS.get(key, _NT_OTHER), line=dict(width=0)),
-                text=texts, hovertemplate="pos %{x} — %{text}<extra></extra>",
-            ), row=2, col=1)
-        fig.update_layout(barmode="stack", bargap=0)
-        fig.update_yaxes(title_text="allele", range=[0, 1], tickformat=".0%",
-                         tickvals=[0, 0.5, 1], row=2, col=1)
-        fig.update_xaxes(title_text="Position (bp)", row=2, col=1)
-        fig.update_yaxes(title_text="Coverage depth", row=1, col=1)
-    else:
-        fig.update_xaxes(title_text="Position (bp)")
-        fig.update_yaxes(title_text="Coverage depth")
+            ))
 
     seg_txt = f"segment {order} · " if order != 99 else ""
     fig.update_layout(
@@ -380,12 +349,13 @@ def _coverage_fig(sample: str, order: int, gene: str, ref: str,
                          f"{pct_cov:.1f}% covered</sup>"),
                    font=dict(size=15, color=INK)),
         template="plotly_white",
-        height=430 if has_comp else 340,
+        height=360,
         margin=dict(l=64, r=24, t=76, b=48),
-        showlegend=has_comp,
-        legend=dict(orientation="h", yanchor="top", y=-0.16, x=0,
+        xaxis_title="Position (bp)",
+        yaxis_title="Coverage depth",
+        showlegend=bool(compositions),
+        legend=dict(orientation="h", yanchor="top", y=-0.18, x=0,
                     font=dict(size=11), title=dict(text="SNP alleles  ", side="left")),
-        bargap=0,
     )
     return fig
 
