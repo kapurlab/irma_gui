@@ -240,8 +240,14 @@ def bar_widths(positions: List[int], total_len: int) -> List[float]:
     out = []
     for p in positions:
         g = nearest.get(p)
-        w = nominal if g is None else min(nominal, max(g * 0.9, floor))
-        out.append(max(min(w, g * 0.9) if g else w, floor))
+        if g is None:
+            out.append(max(nominal, floor))
+            continue
+        # The gap is a HARD ceiling: the floor may raise a bar toward it, never
+        # past it. (Reversing that is invisible on a 2 kb segment, where the
+        # floor is sub-base, and guarantees overlap on a 4 Mb genome, where it
+        # is ~1.5 kb.)
+        out.append(min(g * 0.9, max(nominal, floor)))
     return out
 
 
