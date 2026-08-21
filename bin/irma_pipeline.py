@@ -443,6 +443,23 @@ def main(argv=None) -> int:
 
     # ---- Step 2: IRMA assembly ----
     step(f"Step 2: IRMA assembly (module {module})")
+    # A sample's run dir is REUSED across reruns, and every file below is
+    # derived from one specific run. Leaving them made a failed rerun wear its
+    # predecessor's results: the live case was an assembly that produced zero
+    # segments while the report showed the PREVIOUS run's GenoFLU table — 8
+    # segments at 99% identity next to "0 segments assembled", read as one run.
+    # Remove them up front so whatever the report shows is from THIS run.
+    # (irma/ itself is replaced by IRMA; input QC was just written above.)
+    for stale in ("assembly.fasta", "assembly_stats.json", "genoflu_result.json",
+                  "genoflu_genotype.tsv", "genoflu_genotype.xlsx",
+                  "ha_cleavage.json", "report.html", "report.pdf",
+                  f"{args.sample}-submission.fasta"):
+        try:
+            (outdir / stale).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log(f"  WARNING: could not remove stale {stale}: {exc}")
     # The submission-FASTA metadata lives in the project's irma/ dir (parent of
     # the per-sample run dir). Resolve the sample's record now so the manifest
     # records exactly which metadata produced the headers.
@@ -470,6 +487,37 @@ def main(argv=None) -> int:
     # ---- Step 3: assembly + coverage ----
     step("Step 3: Assembly + coverage gathering")
     asm = gather_assembly(irma_dir, outdir, module)
+    # Zero segments has TWO very different causes, and IRMA reports both as a
+    # clean exit ("R1 aborted, no matches found", rc 0): either the sample
+    # really contains no matching reads, or the match program itself died and
+    # wrote nothing (seen live: BLAT "finished" over 129k read patterns in
+    # under a second, zero output files, on a machine under memory pressure).
+    # READ_COUNTS.txt tells them apart: a real negative sample CLASSIFIES its
+    # reads as nomatch, a dead match stage classifies nothing at all.
+    asm["match_stage_failed"] = False
+    if asm["segment_count"] == 0:
+        counts = {}
+        try:
+            with open(irma_dir / "tables" / "READ_COUNTS.txt", encoding="utf-8") as fh:
+                for line in fh:
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) >= 2 and parts[1].strip().isdigit():
+                        counts[parts[0].strip()] = int(parts[1])
+        except OSError:
+            pass
+        passed_qc = counts.get("2-passQC", 0)
+        classified = counts.get("3-match", 0) + counts.get("3-nomatch", 0) \
+            + counts.get("3-chimeric", 0)
+        if passed_qc > 0 and classified == 0:
+            asm["match_stage_failed"] = True
+            asm["notes"].append(
+                "MATCH STAGE FAILURE: %d reads passed QC but the read-matching "
+                "step classified none of them (not even as no-match). This is a "
+                "tool or environment failure, NOT evidence the sample lacks "
+                "matching reads. Re-run the sample; if it repeats, run "
+                "bdtools doctor irma_gui." % passed_qc)
+            log("  ERROR: " + asm["notes"][-1])
+            _write_assembly_stats(outdir, asm)
     log(f"  {asm['segment_count']} segment(s); subtype {asm['subtype']}; "
         f"QC verdict: {asm['overall_verdict'].upper()}")
     for s in asm["segments"]:
@@ -529,11 +577,25 @@ def main(argv=None) -> int:
     except Exception as exc:  # noqa: BLE001 — never fail the run over the report
         log(f"  WARNING: report generation failed: {exc}")
 
-    step("Pipeline completed")
+    # The final lines are what a user reads in the Pipeline Log pane, so they
+    # must match the exit code: this used to print "Pipeline completed" and
+    # "Outputs in: ..." for a run that was about to exit 1, and that run was
+    # naturally read as a success with a slightly thin report.
+    rc = 0 if irma_rc == 0 and asm["segment_count"] > 0 else (irma_rc or 1)
+    if rc == 0:
+        step("Pipeline completed")
+    elif asm.get("match_stage_failed"):
+        step("Pipeline FAILED — read matching produced no output")
+        log("This is a tool/environment failure, not a negative sample.")
+        log("Re-run the sample; if it repeats, run: bdtools doctor irma_gui")
+    else:
+        step("Pipeline FAILED — no segments assembled")
+        log("If reads were expected to match, check the input files and module; "
+            "a truly negative sample also ends here.")
     log(f"IRMA return code: {irma_rc}")
     log(f"Subtype: {asm['subtype']}  |  GenoFLU: {manifest['genoflu'].get('genotype') or '(n/a)'}")
     log(f"Outputs in: {outdir}")
-    return 0 if irma_rc == 0 and asm["segment_count"] > 0 else (irma_rc or 1)
+    return rc
 
 
 if __name__ == "__main__":

@@ -516,6 +516,16 @@ def write_html(ctx: Dict[str, Any], path: Path, outdir: Path) -> None:
                  _fmt_f(s.get("pct_zero_cov")), str(s.get("verdict", ""))] for s in segments]
         parts.append(_grid_html(["Segment", "Ref", "Length", "Mean depth", "% < 10X", "% zero", "QC"],
                                 body, verdict_col=6))
+    elif asm.get("match_stage_failed"):
+        # The zero-segment result has two very different causes, and only one
+        # of them says anything about the sample. When the pipeline diagnosed
+        # a dead match stage (reads passed QC, none were classified — not even
+        # as no-match), the report must say THAT, or a tool failure reads as a
+        # negative sample in the one document people keep.
+        parts.append('<div class="banner danger">RUN FAILED — the read-matching step produced no '
+                     'output. This is a tool or environment failure, NOT evidence the sample lacks '
+                     'matching reads. Re-run this sample; if it repeats, run '
+                     '<code>bdtools doctor irma_gui</code>.</div>')
     else:
         parts.append('<div class="banner danger">No segments assembled — IRMA produced no consensus '
                      'for this sample.</div>')

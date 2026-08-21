@@ -26,7 +26,14 @@ def _first_existing(*paths: str) -> str:
     for p in paths:
         if p and Path(p).exists():
             return p
-    return paths[0] if paths else ""
+    # Nothing exists: return EMPTY, never the first literal. Returning the
+    # /srv site path "informatively" on a Mac persisted it into config.json,
+    # and from there it was passed to every pipeline run on a machine where
+    # it can never exist — a Linux path in every Mac run's provenance, and a
+    # setup-looking warning the user cannot act on. Empty means "use the
+    # bundled default", which is the actual behavior everywhere but a site
+    # that really has the shared path.
+    return ""
 
 
 # GenoFLU reference DB. Empty by default — run_genoflu.py resolves the set
