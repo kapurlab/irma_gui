@@ -32,6 +32,7 @@ Run standalone:
 import argparse
 import os
 import shutil
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -73,7 +74,14 @@ def _irma_version() -> Optional[str]:
         proc = subprocess.run(["IRMA"], capture_output=True, text=True, timeout=60)
         out = (proc.stdout or "") + (proc.stderr or "")
         for ln in out.splitlines():
-            if "version" in ln.lower() or ln.strip().lower().startswith("irma"):
+            # The actual banner is "Iterative Refinement Meta-Assembler (IRMA),
+            # v1.3.5 (06 JUL 2026)" — it neither starts with "irma" nor contains
+            # the word "version", so both earlier patterns missed it and every
+            # manifest recorded irma: None. Accept any line that names IRMA
+            # alongside something version-shaped.
+            low = ln.lower()
+            if ("irma" in low and re.search(r"v?\d+\.\d+", ln)) \
+                    or "version" in low:
                 return ln.strip()
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return None
