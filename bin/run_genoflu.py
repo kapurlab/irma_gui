@@ -69,6 +69,38 @@ def _tool_version(cmd: List[str], env: Optional[Dict[str, str]] = None) -> Optio
         return None
 
 
+def _sibling_arch_pin(env_dir) -> list:
+    """['/usr/bin/arch', '-arm64'] (or -x86_64) for a sibling env, else [].
+
+    A sibling env's binaries must run under the SIBLING env's architecture, not
+    this backend's. This backend is arch-pinned by its launcher for its OWN env;
+    on a machine holding both osx-64 and osx-arm64 envs (real on lab Macs), the
+    inherited preference is wrong for one of them — and a universal binary in
+    the sibling env (the August 2026 case: perl) then picks the slice its
+    modules were not built for and dies at startup while every file check
+    passes. The platform an env was BUILT for is the majority "subdir" over its
+    conda-meta records — the same rule the suite's launchers use. Empty when
+    the env records nothing or off macOS: assert nothing rather than guess.
+    """
+    import json as _json
+    if sys.platform != "darwin" or env_dir is None or not os.path.exists("/usr/bin/arch"):
+        return []
+    counts = {}
+    try:
+        for mj in (Path(env_dir) / "conda-meta").glob("*.json"):
+            try:
+                sd = _json.loads(mj.read_text(encoding="utf-8")).get("subdir", "")
+            except Exception:
+                continue
+            if sd and sd != "noarch":
+                counts[sd] = counts.get(sd, 0) + 1
+    except OSError:
+        return []
+    top = max(counts, key=counts.get) if counts else ""
+    return {"osx-arm64": ["/usr/bin/arch", "-arm64"],
+            "osx-64": ["/usr/bin/arch", "-x86_64"]}.get(top, [])
+
+
 def _sibling_env_dir(name: str) -> Optional[Path]:
     """Conda env of a sibling suite tool, or None (then PATH decides).
 
@@ -318,6 +350,9 @@ def run(
     if genoflu_exe and _GENOFLU_ENV is not None and genoflu_exe.startswith(str(_GENOFLU_ENV)):
         env["PATH"] = f"{_GENOFLU_ENV / 'bin'}{os.pathsep}{env.get('PATH', '')}"
         env["CONDA_PREFIX"] = str(_GENOFLU_ENV)
+        # Run GenoFLU under ITS env's architecture — see _sibling_arch_pin.
+        if cmd:
+            cmd = _sibling_arch_pin(_GENOFLU_ENV) + cmd
     env.setdefault("TMPDIR", "/tmp")
     started = _now()
     rc = 0
