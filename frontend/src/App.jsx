@@ -3,8 +3,10 @@ import "./App.css";
 import ThemeToggle from "./ThemeToggle";
 import CitationFooter from "./Citations";
 import ResultsPane from "./ResultsPane";
+import { ResizableTable, Grip } from "./ResizableTable";
 import { useResults } from "./useResults";
 import CopyLogButton from "./CopyLogButton";
+import { PaneSplitters } from "./SplitPane";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -779,6 +781,9 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* Draggable dividers for every two-pane row on the page (see
+          SplitPane.jsx). One element, no per-row wiring. */}
+      <PaneSplitters />
       <input
         ref={uploadInputRef}
         type="file"
@@ -1414,11 +1419,11 @@ export default function App() {
                   {/* Editable table */}
                   {activeMeta.fields && activeMeta.fields.length > 0 ? (
                     <div style={{ overflowX: "auto", marginBottom: 12 }}>
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <ResizableTable id="sample-metadata" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                         <thead>
                           <tr style={{ textAlign: "left", borderBottom: "2px solid var(--border, #ddd)", background: "var(--panel-2)" }}>
                             {activeMeta.fields.map((f) => (
-                              <th key={f} style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{f}</th>
+                              <th key={f} style={{ padding: "6px 8px", whiteSpace: "nowrap" }}><span className="rt-th-label">{f}</span><Grip label={f} /></th>
                             ))}
                           </tr>
                         </thead>
@@ -1451,7 +1456,7 @@ export default function App() {
                             ))
                           )}
                         </tbody>
-                      </table>
+                      </ResizableTable>
                     </div>
                   ) : (
                     <div className="note">No metadata fields available.</div>
@@ -1755,16 +1760,16 @@ export default function App() {
                   {/* Segment table */}
                   {Array.isArray(assembly.segments) && assembly.segments.length > 0 && (
                     <div style={{ overflowX: "auto", marginBottom: 12 }}>
-                      <table className="result-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <ResizableTable id="irma.segments" className="result-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                         <thead>
                           <tr style={{ textAlign: "left", borderBottom: "2px solid var(--border, #ddd)" }}>
-                            <th style={{ padding: "6px 8px" }}>Segment</th>
-                            <th style={{ padding: "6px 8px" }}>Reference</th>
-                            <th style={{ padding: "6px 8px", textAlign: "right" }}>Length (bp)</th>
-                            <th style={{ padding: "6px 8px", textAlign: "right" }}>Mean Depth</th>
-                            <th style={{ padding: "6px 8px", textAlign: "right" }}>%&lt;10X</th>
-                            <th style={{ padding: "6px 8px", textAlign: "right" }}>%Zero</th>
-                            <th style={{ padding: "6px 8px" }}>Verdict</th>
+                            <th style={{ padding: "6px 8px" }}><span className="rt-th-label">Segment</span><Grip label="Segment" /></th>
+                            <th style={{ padding: "6px 8px" }}><span className="rt-th-label">Reference</span><Grip label="Reference" /></th>
+                            <th style={{ padding: "6px 8px", textAlign: "right" }}><span className="rt-th-label">Length (bp)</span><Grip label="Length (bp)" /></th>
+                            <th style={{ padding: "6px 8px", textAlign: "right" }}><span className="rt-th-label">Mean Depth</span><Grip label="Mean Depth" /></th>
+                            <th style={{ padding: "6px 8px", textAlign: "right" }}><span className="rt-th-label">%&lt;10X</span><Grip label="%<10X" /></th>
+                            <th style={{ padding: "6px 8px", textAlign: "right" }}><span className="rt-th-label">%Zero</span><Grip label="%Zero" /></th>
+                            <th style={{ padding: "6px 8px" }}><span className="rt-th-label">Verdict</span><Grip label="Verdict" /></th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1791,7 +1796,7 @@ export default function App() {
                             </tr>
                           ))}
                         </tbody>
-                      </table>
+                      </ResizableTable>
                     </div>
                   )}
 
