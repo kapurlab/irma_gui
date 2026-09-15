@@ -1,0 +1,8 @@
+# Bytecode caches. Python regenerates these on import, so a committed set goes
+# stale the moment anyone RUNS the tool — every checkout then shows a page of
+# modified .pyc it never touched, and `bdtools update` refused to move the
+# checkout at all ("has local source changes: .../__init__.cpython-310.pyc")
+# until the suite was taught to tolerate them in 2026-09. vsnp_gui hit the same
+# thing at v0.4.73; this is that fix, applied here.
+__pycache__/
+*.pyc
