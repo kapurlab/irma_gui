@@ -511,12 +511,19 @@ class MetadataPayload(BaseModel):
 def api_save_metadata(name: str, payload: MetadataPayload):
     irma_dir = _irma_dir(name)
     saved = meta_mod.save_json(irma_dir, payload.records or {})
-    # Regenerate the mirror workbook so Download reflects the latest web edits.
+    # Update the workbook so Download reflects the latest web edits. This is an
+    # in-place edit of the canonical columns — a lab's own columns beside them
+    # are left alone — and a workbook we cannot match rows in is left untouched
+    # and said so, rather than replaced with one we can.
+    xlsx_note = ""
     try:
         meta_mod.write_xlsx(meta_mod.load_json(irma_dir), irma_dir / meta_mod.METADATA_XLSX)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("metadata xlsx regen failed: %s", exc)
-    return JSONResponse({"ok": True, "json": str(saved), "count": len(payload.records or {})})
+        logger.warning("metadata xlsx update skipped: %s", exc)
+        xlsx_note = f"Saved. {meta_mod.METADATA_XLSX} was left unchanged: {exc}"
+    return JSONResponse({"ok": True, "json": str(saved),
+                         "count": len(payload.records or {}),
+                         "xlsx_warning": xlsx_note})
 
 
 @app.get("/api/projects/{name}/metadata.xlsx")

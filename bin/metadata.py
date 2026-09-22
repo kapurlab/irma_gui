@@ -176,7 +176,82 @@ def read_xlsx(path: Path, key_col: Optional[str] = None) -> Dict[str, Dict[str, 
 
 
 def write_xlsx(records: Dict[str, Dict[str, str]], path: Path) -> Path:
-    """Write {sample -> record} as a labeled metadata workbook."""
+    """Write {sample -> record} as a labeled metadata workbook.
+
+    When a workbook is ALREADY at `path` it is updated IN PLACE, never rebuilt.
+    The docstring above invites a lab to "manage it locally", and labs do that
+    by adding columns of their own — submitter, review notes, repeat-run dates.
+    Regenerating the sheet from the seven canonical fields deletes every one of
+    them, so instead we find each sample's row and write only our own columns,
+    appending a column for any canonical field the sheet does not already name
+    EXACTLY. Matching by header alias is fine for reading, but writing through
+    an alias would overwrite a lab's free-text `strain` column with a subtype,
+    so a write only ever goes to a column headed with the field's own name.
+    """
+    path = Path(path)
+    if path.is_file():
+        return _merge_xlsx(records, path)
+    return _new_xlsx(records, path)
+
+
+def _merge_xlsx(records: Dict[str, Dict[str, str]], path: Path) -> Path:
+    """Update the canonical fields of an existing workbook, touching nothing else."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(str(path))
+    ws = wb.active
+    header = ["" if c.value is None else str(c.value) for c in ws[1]] if ws.max_row else []
+    key = _resolve_columns(header).get("sample")
+    if key is None:
+        # No column we can match rows on. Guessing would write over someone's
+        # data; leave the file exactly as it is and let the JSON stand alone.
+        raise ValueError(f"{path.name} has no recognizable sample column — not overwriting it")
+    key += 1
+
+    norm_hdr = [_norm(h) for h in header]
+    width = len(header)
+    col: Dict[str, int] = {}
+    for field in FIELDS:
+        if field == "sample":
+            continue
+        n = _norm(field)
+        if n in norm_hdr:
+            col[field] = norm_hdr.index(n) + 1
+        else:
+            width += 1
+            ws.cell(row=1, column=width, value=field)
+            col[field] = width
+
+    at_row: Dict[str, int] = {}
+    last = 1
+    for r in range(2, ws.max_row + 1):
+        v = ws.cell(row=r, column=key).value
+        if v is not None and str(v).strip():
+            at_row.setdefault(str(v).strip(), r)
+        for c in range(1, ws.max_column + 1):
+            cv = ws.cell(row=r, column=c).value
+            if cv is not None and str(cv).strip():
+                last = r        # occupied by ANY cell, a note column included
+                break
+
+    row = last
+    for sample in sorted(records):
+        rec = records[sample]
+        r = at_row.get(sample)
+        if r is None:
+            row += 1
+            r = row
+            ws.cell(row=r, column=key, value=sample)
+            at_row[sample] = r
+        for field, c in col.items():
+            ws.cell(row=r, column=c, value=rec.get(field, ""))
+
+    wb.save(str(path))
+    return path
+
+
+def _new_xlsx(records: Dict[str, Dict[str, str]], path: Path) -> Path:
+    """The first write: a fresh, labeled workbook of exactly our fields."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
 
